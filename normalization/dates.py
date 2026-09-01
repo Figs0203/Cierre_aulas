@@ -1,0 +1,212 @@
+"""
+Normalización y formateo de fechas para el Asistente de Cierre de Aulas COIN.
+
+Maneja la conversión entre los diferentes formatos de fecha encontrados
+en los archivos Excel:
+- DD/MM/AAAA (Sistematización)
+- DD-mes-AAAA como "16-jun-2025" (Certificados)
+- Fechas nativas de Excel (datetime)
+- Fechas almacenadas como texto en diversos formatos.
+
+Principio de diseño:
+    Las fechas deben provenir de fuentes verificables.
+    La herramienta normaliza FORMATO, nunca CONTENIDO.
+    No se crean fechas nuevas salvo regla explícita confirmada.
+"""
+
+from __future__ import annotations
+
+from datetime import date, datetime
+from typing import Any
+
+
+# Meses en español para formato de certificados (16-jun-2025)
+_MESES_ES = {
+    1: "ene", 2: "feb", 3: "mar", 4: "abr",
+    5: "may", 6: "jun", 7: "jul", 8: "ago",
+    9: "sep", 10: "oct", 11: "nov", 12: "dic",
+}
+
+# Meses en español inverso para parseo
+_MESES_ES_INV = {v: k for k, v in _MESES_ES.items()}
+# Agregar variantes con tilde y sin tilde
+_MESES_ES_INV.update({
+    "enero": 1, "febrero": 2, "marzo": 3, "abril": 4,
+    "mayo": 5, "junio": 6, "julio": 7, "agosto": 8,
+    "septiembre": 9, "octubre": 10, "noviembre": 11, "diciembre": 12,
+})
+
+
+def parse_date(value: Any) -> date | None:
+    """Intenta parsear un valor como fecha.
+
+    Maneja:
+    - datetime y date nativos.
+    - Strings en formato DD/MM/AAAA.
+    - Strings en formato DD-MM-AAAA.
+    - Strings en formato DD-mes-AAAA (ej. "16-jun-2025").
+    - Strings en formato AAAA-MM-DD (ISO).
+    - Valores numéricos de Excel (serial date).
+
+    Args:
+        value: Valor a interpretar como fecha.
+
+    Returns:
+        date si el parseo fue exitoso, None si no se pudo interpretar.
+        Nunca lanza excepción; devuelve None ante datos no interpretables.
+    """
+    if value is None:
+        return None
+
+    # Ya es una fecha nativa
+    if isinstance(value, datetime):
+        return value.date()
+
+    if isinstance(value, date):
+        return value
+
+    # Intentar como string
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        return _parse_date_string(text)
+
+    # Intentar como número (serial date de Excel)
+    if isinstance(value, (int, float)):
+        return _parse_excel_serial(value)
+
+    return None
+
+
+def _parse_date_string(text: str) -> date | None:
+    """Parsea una cadena de texto como fecha."""
+
+    # Formato DD/MM/AAAA
+    parts = text.split("/")
+    if len(parts) == 3:
+        return _try_dmy(parts[0], parts[1], parts[2])
+
+    # Formato DD-MM-AAAA o DD-mes-AAAA
+    parts = text.split("-")
+    if len(parts) == 3:
+        # Intentar primero DD-mes-AAAA (ej. "16-jun-2025")
+        month_num = _MESES_ES_INV.get(parts[1].lower().strip())
+        if month_num is not None:
+            return _try_dmy(parts[0], str(month_num), parts[2])
+        # Intentar DD-MM-AAAA
+        return _try_dmy(parts[0], parts[1], parts[2])
+
+    # Formato ISO AAAA-MM-DD (poco probable en estos archivos pero por robustez)
+    if len(text) == 10 and text[4] == "-":
+        try:
+            return date.fromisoformat(text)
+        except ValueError:
+            pass
+
+    return None
+
+
+def _try_dmy(day_str: str, month_str: str, year_str: str) -> date | None:
+    """Intenta construir una fecha a partir de día, mes y año como strings."""
+    try:
+        day = int(day_str.strip())
+        month = int(month_str.strip())
+        year = int(year_str.strip())
+
+        # Ajustar años de 2 dígitos
+        if year < 100:
+            year += 2000
+
+        return date(year, month, day)
+    except (ValueError, OverflowError):
+        return None
+
+
+def _parse_excel_serial(serial: int | float) -> date | None:
+    """Convierte un número serial de Excel a fecha.
+
+    Excel usa el 1 de enero de 1900 como base (serial = 1).
+    Nota: Excel tiene un bug histórico que considera 1900 como bisiesto.
+    """
+    try:
+        serial_int = int(serial)
+        if serial_int < 1 or serial_int > 2958465:  # Rango válido de Excel
+            return None
+
+        # Ajustar el bug de Excel (29-feb-1900 no existe)
+        if serial_int > 59:
+            serial_int -= 1
+
+        # Base: 31-dic-1899 (serial 0 en el sistema corregido)
+        from datetime import timedelta
+        base = date(1899, 12, 31)
+        return base + timedelta(days=serial_int)
+    except (ValueError, OverflowError):
+        return None
+
+
+def format_date_sistematizacion(d: date | None) -> str:
+    """Formatea una fecha para la columna de Sistematización: DD/MM/AAAA.
+
+    Args:
+        d: Fecha a formatear.
+
+    Returns:
+        String en formato "DD/MM/AAAA" o "" si la fecha es None.
+    """
+    if d is None:
+        return ""
+    return d.strftime("%d/%m/%Y")
+
+
+def format_date_certificados(d: date | None) -> str:
+    """Formatea una fecha para el archivo de Certificados: DD-mes-AAAA.
+
+    Ejemplo: date(2025, 6, 16) → "16-jun-2025"
+
+    Args:
+        d: Fecha a formatear.
+
+    Returns:
+        String en formato "DD-mes-AAAA" o "" si la fecha es None.
+    """
+    if d is None:
+        return ""
+
+    month_name = _MESES_ES.get(d.month, "???")
+    return f"{d.day}-{month_name}-{d.year}"
+
+
+def extract_year(d: date | None) -> int | None:
+    """Extrae el año de una fecha.
+
+    Args:
+        d: Fecha.
+
+    Returns:
+        Año como entero o None.
+    """
+    return d.year if d else None
+
+
+def extract_semester(d: date | None) -> int | None:
+    """Determina el semestre (1 o 2) a partir de una fecha.
+
+    Convención:
+    - Meses 1-6: Semestre 1.
+    - Meses 7-12: Semestre 2.
+
+    NOTA: Esta es una regla determinística simple. Si la institución
+    utiliza una definición diferente de semestre, debe confirmarse
+    en la Fase 0 y ajustarse.
+
+    Args:
+        d: Fecha.
+
+    Returns:
+        1 o 2, o None si la fecha es None.
+    """
+    if d is None:
+        return None
+    return 1 if d.month <= 6 else 2
