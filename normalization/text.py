@@ -193,3 +193,98 @@ def normalize_name_component(name: str | None) -> str:
     name = normalize_whitespace(name)
 
     return name
+
+
+# ============================================================
+# FORMATEO DE COLUMNAS DE SALIDA (REGLAS 5 Y 6 — CONFIRMADO 2026-09-04)
+# ============================================================
+
+
+def format_codigo_con_guion(codigo_curso: str) -> str:
+    """Inserta un guión entre el bloque de letras y el bloque de números de un código.
+
+    Formato confirmado (Regla 5):
+        'ABBUEI205'  → 'ABBUEI-205'
+        'CMI154'     → 'CMI-154'
+        'LATEX10'    → 'LATEX-10'
+
+    Si el código ya tiene guión, lo devuelve tal cual.
+    Si el código no sigue el patrón letras+dígitos, devuelve el código sin cambios.
+
+    Args:
+        codigo_curso: Código del curso (ej. 'ABBUEI205').
+
+    Returns:
+        Código con guión (ej. 'ABBUEI-205'), o el original si no aplica el patrón.
+    """
+    if not codigo_curso:
+        return ""
+    codigo_curso = codigo_curso.strip()
+    if "-" in codigo_curso:
+        return codigo_curso  # ya tiene guión
+    match = re.fullmatch(r"([A-Za-z]+)(\d+)", codigo_curso)
+    if match:
+        return f"{match.group(1)}-{match.group(2)}"
+    return codigo_curso  # no sigue el patrón esperado; devolver sin cambios
+
+
+def format_docente_coin(codigo_curso: str | None, nombre_formador: str | None) -> str:
+    """Genera el valor de la columna 'Docente COIN' para el archivo de Certificados.
+
+    Formato confirmado por el monitor (Regla 5, 2026-09-04):
+        '{CÓDIGO-CON-GUIÓN} {NOMBRE_FORMADOR}'
+        Ejemplo: 'ABBUEI-205 Manuela Restrepo'
+
+    Si alguno de los dos campos es None o vacío, retorna '' (nunca rellena con datos ficticios).
+
+    Args:
+        codigo_curso: Código del curso (ej. 'ABBUEI205' o 'ABBUEI-205').
+        nombre_formador: Nombre completo del formador líder (ej. 'Manuela Restrepo').
+
+    Returns:
+        Cadena con formato confirmado, o '' si algún campo falta.
+    """
+    if not codigo_curso or not nombre_formador:
+        return ""
+    codigo_guion = format_codigo_con_guion(codigo_curso.strip())
+    nombre = nombre_formador.strip()
+    if not codigo_guion or not nombre:
+        return ""
+    return f"{codigo_guion} {nombre}"
+
+
+def format_ciclo(
+    clase: str | int | None,
+    catalogo: str | None,
+    programa: str | None,
+    fecha_inicio_str: str | None,
+    fecha_fin_str: str | None,
+) -> str:
+    """Genera el valor de la columna 'Ciclo' para el archivo de Certificados.
+
+    Formato confirmado por el monitor (Regla 6, 2026-09-04):
+        'CLASE {clase} {catalogo} - {programa} - {mes_inicio} {dia_inicio} A {mes_fin} {dia_fin}'
+        Ejemplo: 'CLASE 5535 MF7001 - M. ESTUDIOS JURÍDICOS - MARZO 16 A ABRIL 27'
+
+    Las fechas se reciben como cadenas ya formateadas en estilo 'MARZO 16',
+    producidas por normalization.dates.format_ciclo_date().
+
+    Si alguno de los campos requeridos es None o vacío, retorna '' (nunca inventa texto).
+
+    Args:
+        clase: Número de clase (ej. 5535).
+        catalogo: Código de catálogo (ej. 'MF7001').
+        programa: Nombre del programa académico (ej. 'M. ESTUDIOS JURÍDICOS').
+        fecha_inicio_str: Fecha de inicio ya formateada (ej. 'MARZO 16').
+        fecha_fin_str: Fecha de fin ya formateada (ej. 'ABRIL 27').
+
+    Returns:
+        Cadena con formato confirmado, o '' si algún campo falta.
+    """
+    if any(v is None or str(v).strip() == "" for v in [clase, catalogo, programa, fecha_inicio_str, fecha_fin_str]):
+        return ""
+    return (
+        f"CLASE {clase} {str(catalogo).strip()} - "
+        f"{str(programa).strip()} - "
+        f"{str(fecha_inicio_str).strip()} A {str(fecha_fin_str).strip()}"
+    )

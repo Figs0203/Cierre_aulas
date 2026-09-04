@@ -27,8 +27,6 @@ FIXTURES_DIR = Path(__file__).resolve().parent
 
 def create_synthetic_control_aulas(path: Path) -> None:
     wb = openpyxl.Workbook()
-    ws = wb.active
-    ws.title = "Control_Aulas"
 
     headers = [
         "AÑO", "TIPO DE AULA", "CURSO QUE REALIZA", "PROGRAMA ACADÉMICO",
@@ -37,10 +35,22 @@ def create_synthetic_control_aulas(path: Path) -> None:
         "FECHA 2 DE FINALIZACIÓN DEL CURSO", "ENVÍO DE NOTAS A PROFESORES",
         "CERTIFICADOS Y CIERRE DE CURSO", "CERTIFICADOS",
     ]
-    ws.append(headers)
 
-    # Aula activa con 3 clases
-    rows = [
+    sheet_names = [
+        "Tabla_CMI",
+        "Tabla_ABBUEI",
+        "Tabla_GICE",
+        "Tabla_EPA",
+        "Tabla_LATEX",
+        "Tabla_IPI",
+        "Tabla_UEI",
+        "Tabla_CAI",
+        "Creación aulas GDA",
+        "CONTROL",
+    ]
+
+    # Filas para el aula activa ABBUEI154 y un aula cerrada en Tabla_ABBUEI
+    abbuei_rows = [
         [2026, "VIRTUAL", "Búsqueda y uso ético", "Ingeniería", "CAT101", "001", "ABBUEI154-001", "Prof. Ana Gomez", "2026-02-01", "2026-06-16", None, "2026-06-17", "2026-06-18", None],
         [2026, "VIRTUAL", "Búsqueda y uso ético", "Ingeniería", "CAT101", "002", "ABBUEI154-002", "Prof. Ana Gomez", "2026-02-01", "2026-06-16", None, "2026-06-17", "2026-06-18", None],
         [2026, "VIRTUAL", "Búsqueda y uso ético", "Administración", "CAT102", "003", "ABBUEI154-003", "Prof. Carlos Ruiz", "2026-02-01", "2026-06-16", None, "2026-06-17", "2026-06-18", None],
@@ -48,13 +58,22 @@ def create_synthetic_control_aulas(path: Path) -> None:
         [2026, "VIRTUAL", "Búsqueda y uso ético", "Derecho", "CAT103", "001", "ABBUEI100-001", "Prof. Maria Lopez", "2026-01-10", "2026-05-15", None, "2026-05-16", "2026-05-17", "2026-05-18"],
     ]
 
-    for r in rows:
-        ws.append(r)
-
-    # Relleno verde en estados completados
     green_fill = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
-    ws.cell(row=2, column=12).fill = green_fill
-    ws.cell(row=2, column=13).fill = green_fill
+
+    for idx, sname in enumerate(sheet_names):
+        if idx == 0:
+            ws = wb.active
+            ws.title = sname
+        else:
+            ws = wb.create_sheet(title=sname)
+
+        ws.append(headers)
+
+        if sname == "Tabla_ABBUEI":
+            for r in abbuei_rows:
+                ws.append(r)
+            ws.cell(row=2, column=12).fill = green_fill
+            ws.cell(row=2, column=13).fill = green_fill
 
     wb.save(path)
 

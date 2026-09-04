@@ -210,3 +210,42 @@ def extract_semester(d: date | None) -> int | None:
     if d is None:
         return None
     return 1 if d.month <= 6 else 2
+
+
+# ============================================================
+# FORMATO PARA COLUMNA "CICLO" EN CERTIFICADOS (REGLA 6 - CONFIRMADO)
+# ============================================================
+
+# Meses en español en MAYÚSCULAS para la columna Ciclo
+# Formato confirmado: "CLASE 5535 MF7001 - M. ESTUDIOS JURÍDICOS - MARZO 16 A ABRIL 27"
+_MESES_ES_MAYUSCULAS = {
+    1: "ENERO", 2: "FEBRERO", 3: "MARZO", 4: "ABRIL",
+    5: "MAYO", 6: "JUNIO", 7: "JULIO", 8: "AGOSTO",
+    9: "SEPTIEMBRE", 10: "OCTUBRE", 11: "NOVIEMBRE", 12: "DICIEMBRE",
+}
+
+
+def format_ciclo_date(d: date | datetime | None) -> str:
+    """Formatea una fecha al estilo de la columna Ciclo: 'MES DÍA'.
+
+    Formato confirmado por el monitor (2026-09-04):
+        2026-03-16 → 'MARZO 16'
+        2026-04-27 → 'ABRIL 27'
+
+    El año NO se incluye en el campo Ciclo.
+    El mes se escribe en español y en MAYÚSCULAS.
+
+    Args:
+        d: Objeto date, datetime o None.
+
+    Returns:
+        Cadena con formato 'MES DÍA' o '' si la fecha es None.
+    """
+    if d is None:
+        return ""
+    if isinstance(d, datetime):
+        d = d.date()
+    mes = _MESES_ES_MAYUSCULAS.get(d.month, "")
+    if not mes:
+        return ""
+    return f"{mes} {d.day}"

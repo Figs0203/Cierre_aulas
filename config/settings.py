@@ -12,6 +12,28 @@ from pathlib import Path
 
 
 # ============================================================
+# HOJAS DEL ARCHIVO CONTROL_AULAS_FORMADORES (REGLA 1 - CONFIRMADO)
+# ============================================================
+
+# Nombres exactos de las hojas del archivo Control_Aulas_Formadores_2026.
+# La hoja 'Creación aulas GDA' debe ignorarse SIEMPRE.
+CONTROL_AULAS_ALL_SHEETS = [
+    "Tabla_CMI",
+    "Tabla_ABBUEI",
+    "Tabla_GICE",
+    "Tabla_EPA",
+    "Tabla_LATEX",
+    "Tabla_IPI",
+    "Tabla_UEI",
+    "Tabla_CAI",
+    "CONTROL",
+]
+
+# Hoja que debe ignorarse siempre, sin excepción.
+CONTROL_AULAS_IGNORED_SHEET = "Creación aulas GDA"
+
+
+# ============================================================
 # FORMATO DEL ARCHIVO DE SALIDA
 # ============================================================
 
@@ -45,23 +67,44 @@ DATE_FORMAT_SISTEMATIZACION = "%d/%m/%Y"  # DD/MM/AAAA
 # ============================================================
 # VALORES OPERATIVOS
 # ============================================================
-# NOTA: Los siguientes valores tienen estado
-# [REGLA OPERATIVA REPORTADA — PENDIENTE DE VALIDACIÓN]
-# y se confirmarán o ajustarán en la Fase 0.
+# NOTA DE ESTADO POR CAMPO:
+#   [CONFIRMADO]   = Regla validada por el usuario.
+#   [PENDIENTE]    = Requiere evidencia de archivos reales.
 
-# Valor para "Se elaboró certificado" cuando el estudiante NO aprobó
+# [CONFIRMADO] Valor para "Se elaboró certificado" cuando el estudiante NO aprobó
 CERTIFICADO_NO = "NO"
 
-# Valor para "Se elaboró certificado" cuando el estudiante SÍ aprobó
+# [CONFIRMADO] Valor para "Se elaboró certificado" cuando el estudiante SÍ aprobó
 CERTIFICADO_SI = "SI"
 
-# Valor para campos no aplicables en estudiantes no aprobados
-# PENDIENTE DE VALIDACIÓN: confirmar si "No aplica" es el texto oficial
+# [CONFIRMADO] Valor en "Código del certificado" para estudiantes no aprobados.
+# Se aplica en SISTEMATIZACIÓN y en CERTIFICADOS.
 VALOR_NO_APLICA = "No aplica"
 
-# Total de certificados por estudiante aprobado
-# PENDIENTE DE VALIDACIÓN: confirmar que siempre es 1
+# [PENDIENTE] Total de certificados por estudiante aprobado — confirmar en Fase 0.
 TOTAL_CERTIFICADOS_DEFAULT = 1
+
+
+# ============================================================
+# FORMATO DE COLUMNAS DE CERTIFICADOS (REGLAS 5 Y 6 - CONFIRMADO)
+# ============================================================
+
+# [CONFIRMADO] Formato de la columna Ciclo en Certificados:
+# "CLASE {clase} {catalogo} - {programa} - {mes_inicio} {dia_inicio} A {mes_fin} {dia_fin}"
+# Ejemplo: "CLASE 5535 MF7001 - M. ESTUDIOS JURÍDICOS - MARZO 16 A ABRIL 27"
+CICLO_FORMAT = "CLASE {clase} {catalogo} - {programa} - {mes_inicio} {dia_inicio} A {mes_fin} {dia_fin}"
+
+# [CONFIRMADO] Formato de la columna Docente COIN en Certificados:
+# "{codigo_guion} {nombre_formador}"
+# Ejemplo: "ABBUEI-205 Manuela Restrepo"
+DOCENTE_COIN_FORMAT = "{codigo_guion} {nombre_formador}"
+
+# Meses en español en mayúsculas para el formato de Ciclo
+MESES_ES_MAYUSCULAS = {
+    1: "ENERO", 2: "FEBRERO", 3: "MARZO", 4: "ABRIL",
+    5: "MAYO", 6: "JUNIO", 7: "JULIO", 8: "AGOSTO",
+    9: "SEPTIEMBRE", 10: "OCTUBRE", 11: "NOVIEMBRE", 12: "DICIEMBRE",
+}
 
 
 # ============================================================
