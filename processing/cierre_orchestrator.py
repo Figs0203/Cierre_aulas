@@ -121,16 +121,18 @@ def run_cierre_pipeline(
 
     # Construir objeto resultado
     primary_meta = list(metadatos_control.values())[0] if metadatos_control else AulaMetadata()
+    start_consecutivo = max_consecutivo + 1 if max_consecutivo > 0 else 1
     cierre_result = AulaCierreResult(
         aula=primary_meta,
         clases=clases_groups,
         hashes_before={k: v.sha256_hash for k, v in hashes_before.items()},
+        metadatos_control=metadatos_control,
+        start_consecutivo=start_consecutivo,
     )
 
     # 9. Generar Excel Auxiliar si no es simulación
     output_file: Optional[Path] = None
     if not is_simulation:
-        start_consecutivo = max_consecutivo + 1 if max_consecutivo > 0 else 1
         output_file = generate_cierre_excel(
             result=cierre_result,
             codigo_curso=cod_curso,

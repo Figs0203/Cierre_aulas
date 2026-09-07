@@ -26,6 +26,7 @@ if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
 from input.file_selector import select_all_four_files
+from output.direct_updater import apply_direct_cierre
 from processing.cierre_orchestrator import run_cierre_pipeline
 from security.integrity import compute_sha256, verify_integrity
 from security.offline_check import check_offline_compliance
@@ -50,10 +51,11 @@ def show_menu() -> str:
     print("  [2] Modo 2 — Simulación Previa (Validación en Memoria) [HABILITADO]")
     print("  [3] Modo 3 — Generar Archivo Auxiliar de Cierre [HABILITADO]")
     print("  [4] Verificación de Arquitectura Offline")
+    print("  [5] Modo 5 — Aplicar Cierre Directo en Archivos Oficiales (Con Backup y Protección)")
     print("  [0] Salir")
     print("-" * 76)
     try:
-        choice = input("Seleccione una opción (0-4): ").strip()
+        choice = input("Seleccione una opción (0-5): ").strip()
         return choice
     except (EOFError, KeyboardInterrupt):
         return "0"
@@ -200,6 +202,120 @@ def handle_offline_check():
     print("=" * 76)
 
 
+def handle_direct_cierre_mode():
+    print("\n" + "=" * 76)
+    print("INICIANDO MODO 5: APLICAR CIERRE DIRECTO EN ARCHIVOS OFICIALES")
+    print("=" * 76)
+    print("Este modo actualizará directamente los libros oficiales de la biblioteca:")
+    print("  1. Sistematización: Nombres en MAYÚSCULAS + celdas de cierre vacías + borde clase.")
+    print("  2. Certificados: Anexar estudiantes aprobados al final + borde clase.")
+    print("  3. Control de Aulas: Marcar fecha de cierre en columna CERTIFICADOS.")
+    print("  4. Notas: Permanece como SOLO LECTURA inmutable.\n")
+
+    files = select_all_four_files(use_gui=True)
+
+    print("\n🔍 Ingrese el código del aula virtual a cerrar (ej. ABBUEI205):")
+    while True:
+        try:
+            target_aula = input("   Código de aula: ").strip()
+            if target_aula:
+                break
+            print("   ⚠️ Debe ingresar un código de aula válido.")
+        except (EOFError, KeyboardInterrupt):
+            return
+
+    print(f"\n🏷️ Ingrese el código del curso para los certificados (presione ENTER para usar '{target_aula}'):")
+    try:
+        cod_input = input(f"   Código de curso [{target_aula}]: ").strip()
+        codigo_curso = cod_input if cod_input else target_aula
+    except (EOFError, KeyboardInterrupt):
+        codigo_curso = target_aula
+
+    print("\n⏳ Analizando y validando datos en memoria antes de cualquier cambio...")
+    try:
+        res, _, _, _ = run_cierre_pipeline(
+            file_paths=files,
+            target_aula=target_aula,
+            codigo_curso=codigo_curso,
+            is_simulation=True,
+        )
+    except Exception as e:
+        print(f"\n❌ Error durante el análisis previo: {e}")
+        return
+
+    print("\n" + "=" * 76)
+    print("RESUMEN DE MODIFICACIONES PREVISTAS")
+    print("=" * 76)
+    print(f"• Aula Virtual: {target_aula}")
+    print(f"• Código para Certificados: {codigo_curso}")
+    print(f"• Clases detectadas: {len(res.clases)}")
+    print(f"• Total Estudiantes en Sistematización: {res.total_estudiantes}")
+    print(f"• Total Matches exitosos con Notas: {res.total_matched}")
+    print(f"• Total Excluidos (Relleno Naranja en Notas): {res.total_excluded}")
+
+    aprobados_total = 0
+    for cg in res.clases:
+        aprob = sum(1 for m in cg.matches if m.estudiante_sist.estado_calculado == "Aprobó")
+        no_aprob = sum(1 for m in cg.matches if m.estudiante_sist.estado_calculado == "No aprobó")
+        aband = sum(1 for m in cg.matches if m.estudiante_sist.estado_calculado == "Abandonó")
+        aprobados_total += aprob
+        print(f"  [Clase {cg.clase_id}] Aprobados: {aprob} | No Aprobados: {no_aprob} | Abandonaron: {aband}")
+
+    print(f"\n  👉 Se anexarán {aprobados_total} certificados a la hoja oficial de Certificados.")
+
+    print("\n" + "!" * 76)
+    print("🛡️ GARANTÍAS DE SEGURIDAD Y RESPONSABILIDAD:")
+    print("  • Se creará una copia de seguridad (backup) automática de cada archivo")
+    print("    en la carpeta '_backups_cierre/' antes de cualquier escritura.")
+    print("  • Ninguna celda preexistente con datos será destruida ni alterada.")
+    print("  • Los nombres y apellidos de los estudiantes se estandarizarán a MAYÚSCULAS.")
+    print("  • Solo se escribirán notas y estados en celdas que estén estrictamente vacías.")
+    print("  • El archivo de notas permanecerá 100% como solo lectura.")
+    print("!" * 76)
+
+    try:
+        confirm = input("\n¿Está seguro de aplicar estos cambios directamente en los archivos oficiales? (Escriba 'SI' para confirmar): ").strip()
+        if confirm != "SI":
+            print("\n❌ Operación cancelada por el usuario. Ningún archivo fue modificado.")
+            return
+    except (EOFError, KeyboardInterrupt):
+        print("\n❌ Operación cancelada.")
+        return
+
+    print("\n⏳ Creando respaldos de seguridad y aplicando cambios directamente...")
+    try:
+        report = apply_direct_cierre(
+            file_paths=files,
+            result=res,
+            codigo_curso=codigo_curso,
+            metadatos_control=res.metadatos_control,
+            start_consecutivo=res.start_consecutivo,
+        )
+    except Exception as e:
+        print(f"\n❌ Error crítico durante la actualización: {e}")
+        return
+
+    print("\n" + "=" * 76)
+    if report.is_successful:
+        print("🎉 ¡CIERRE DIRECTO APLICADO EXITOSAMENTE EN LOS ARCHIVOS OFICIALES!")
+        print("=" * 76)
+        print("📂 Copias de seguridad automáticas creadas en:")
+        for bk in report.backups_created:
+            print(f"   • {bk.resolve()}")
+        print("\n📊 Estadísticas de la operación:")
+        print(f"   • Sistematización — Nombres estandarizados a MAYÚSCULAS: {report.sistematizacion_names_uppercased}")
+        print(f"   • Sistematización — Celdas vacías actualizadas: {report.sistematizacion_updated_cells}")
+        print(f"   • Sistematización — Celdas preexistentes protegidas (intactas): {report.sistematizacion_untouched_cells}")
+        print(f"   • Certificados — Filas de aprobados anexadas al final: {report.certificados_rows_appended}")
+        print(f"   • Control de Aulas — Clases marcadas con fecha de cierre: {report.control_aulas_classes_marked}")
+        print("\n✅ Todos los archivos oficiales han sido actualizados de forma segura.")
+    else:
+        print("🔴 SE COMPLETÓ CON ADVERTENCIAS O ERRORES:")
+        for err in report.errors:
+            print(f"   • {err}")
+    print("=" * 76)
+
+
 def main():
     print_banner()
 
@@ -214,11 +330,13 @@ def main():
             handle_cierre_execution(is_simulation=False)
         elif choice == "4":
             handle_offline_check()
+        elif choice == "5":
+            handle_direct_cierre_mode()
         elif choice in ("0", "q", "salir", "exit"):
             print("\nSaliendo del asistente. ¡Hasta pronto!")
             sys.exit(0)
         else:
-            print("\n⚠️ Opción no válida. Por favor seleccione 0, 1, 2, 3 o 4.")
+            print("\n⚠️ Opción no válida. Por favor seleccione 0, 1, 2, 3, 4 o 5.")
 
 
 if __name__ == "__main__":

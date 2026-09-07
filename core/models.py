@@ -217,6 +217,12 @@ class AulaCierreResult:
     # Clases procesadas
     clases: list[ClaseGroup] = field(default_factory=list)
 
+    # Metadatos de Control de Aulas por clase {clase_id: AulaMetadata}
+    metadatos_control: dict[str, AulaMetadata] = field(default_factory=dict)
+
+    # Número correlativo sugerido para inicio en Certificados
+    start_consecutivo: int = 1
+
     # Hashes de integridad
     hashes_before: dict[str, str] = field(default_factory=dict)
     hashes_after: dict[str, str] = field(default_factory=dict)
