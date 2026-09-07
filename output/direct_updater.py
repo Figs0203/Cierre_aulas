@@ -44,7 +44,7 @@ from config.settings import (
 )
 from core.models import AulaCierreResult, AulaMetadata, ClaseGroup, StudentMatch
 from normalization.dates import format_certificate_date, format_ciclo_date, get_semester
-from normalization.text import format_ciclo, format_docente_coin
+from normalization.text import format_ciclo, format_docente_coin, normalize_document
 
 # Estilos de bordes oficiales
 _BORDER_THIN = Border(
@@ -164,11 +164,37 @@ def apply_direct_cierre(
 
         col_nombres = col_map.get("nombres")
         col_apellidos = col_map.get("apellidos")
+        col_documento = col_map.get("documento")
         max_col_sist = ws_sist.max_column or 55
 
         for idx, (m, cg) in enumerate(all_matches):
             es = m.estudiante_sist
             r_idx = es.row_number
+
+            # 0. VERIFICACIÓN DE SEGURIDAD DE IDENTIDAD EN FILA DESTINO
+            # Comprobar que la fila r_idx corresponda efectivamente a la persona correcta
+            row_doc_raw = str(ws_sist.cell(r_idx, col_documento).value or "") if col_documento else ""
+            row_doc_norm = normalize_document(row_doc_raw)
+            es_doc_norm = normalize_document(es.documento.value if es.documento else "")
+
+            row_nom = str(ws_sist.cell(r_idx, col_nombres).value or "").strip().upper() if col_nombres else ""
+            row_ape = str(ws_sist.cell(r_idx, col_apellidos).value or "").strip().upper() if col_apellidos else ""
+            es_nom = str(es.nombres.value or "").strip().upper() if es.nombres else ""
+            es_ape = str(es.apellidos.value or "").strip().upper() if es.apellidos else ""
+
+            doc_matches = bool(row_doc_norm and es_doc_norm and row_doc_norm == es_doc_norm)
+            name_matches = bool(
+                (row_nom and es_nom and (row_nom in es_nom or es_nom in row_nom))
+                or (row_ape and es_ape and (row_ape in es_ape or es_ape in row_ape))
+            )
+
+            if not (doc_matches or name_matches):
+                report.errors.append(
+                    f"DISCREPANCIA EN FILA {r_idx} DE SISTEMATIZACIÓN: La celda contiene '{row_nom} {row_ape}' "
+                    f"(Doc: '{row_doc_raw}'), pero se esperaba calificar a '{es_nom} {es_ape}' (Doc: '{es_doc_norm}'). "
+                    f"Fila protegida contra escritura errónea."
+                )
+                continue
 
             # 1. Estandarizar nombres y apellidos a MAYÚSCULAS
             if col_nombres:

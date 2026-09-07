@@ -31,6 +31,77 @@ from normalization.text import (
 )
 
 
+def verify_cross_identity(
+    es: EstudianteSistematizacion,
+    en: EstudianteNotas,
+    match_key: str,
+) -> Tuple[str, List[str]]:
+    """Realiza la validación cruzada de identidad (doble factor) entre Notas y Sistematización."""
+    warnings: List[str] = []
+
+    # Nombres normalizados
+    sist_nom = str(es.nombres.value or "").strip()
+    sist_ape = str(es.apellidos.value or "").strip()
+    notas_nom = str(en.first_name.value or "").strip()
+    notas_ape = str(en.last_name.value or "").strip()
+
+    sist_full = normalize_name_component(f"{sist_nom} {sist_ape}")
+    notas_full = normalize_name_component(f"{notas_nom} {notas_ape}")
+
+    sist_tokens = set(sist_full.split())
+    notas_tokens = set(notas_full.split())
+    common_tokens = sist_tokens.intersection(notas_tokens)
+    has_name_overlap = len(common_tokens) >= 1
+
+    # Documentos normalizados
+    doc_sist = normalize_document(es.documento.value if es.documento else "")
+    doc_notas = normalize_document(en.org_defined_id.value if en.org_defined_id else "")
+    has_doc_match = bool(doc_sist and doc_notas and doc_sist == doc_notas)
+
+    # Correos normalizados
+    mail_sist = normalize_email(es.correo.value if es.correo else "")
+    user_notas = normalize_email(en.username.value if en.username else "")
+    has_mail_match = bool(
+        mail_sist and user_notas and (mail_sist == user_notas or mail_sist.startswith(user_notas + "@"))
+    )
+
+    if match_key == "documento":
+        if has_name_overlap:
+            val_status = "DOBLE FACTOR: Documento + Nombre coinciden"
+        elif has_mail_match:
+            val_status = "DOBLE FACTOR: Documento + Correo coinciden"
+        else:
+            if sist_tokens and notas_tokens:
+                val_status = "ALERTA: Documento coincide pero nombres difieren"
+                warnings.append(
+                    f"Documento coincide ({doc_sist}), pero los nombres difieren: "
+                    f"'{notas_nom} {notas_ape}' (Notas) vs '{sist_nom} {sist_ape}' (Sistematización)."
+                )
+            else:
+                val_status = "VALIDADO POR DOCUMENTO"
+
+    elif match_key == "correo":
+        if has_doc_match:
+            val_status = "DOBLE FACTOR: Correo + Documento coinciden"
+        elif has_name_overlap:
+            val_status = "DOBLE FACTOR: Correo + Nombre coinciden"
+        else:
+            val_status = "VALIDADO POR CORREO INSTITUCIONAL"
+
+    elif match_key == "nombre_exacto":
+        if has_doc_match:
+            val_status = "DOBLE FACTOR: Nombre + Documento coinciden"
+        elif has_mail_match:
+            val_status = "DOBLE FACTOR: Nombre + Correo coinciden"
+        else:
+            val_status = "VALIDADO POR NOMBRE Y APELLIDO UNÍVOCOS"
+            warnings.append("Coincidencia realizada únicamente por nombre y apellido unívocos.")
+    else:
+        val_status = f"VALIDADO POR {match_key.upper()}"
+
+    return val_status, warnings
+
+
 def match_students_in_class(
     clase_group: ClaseGroup,
 ) -> ClaseGroup:
@@ -62,7 +133,6 @@ def match_students_in_class(
             notas_validas.append(en)
 
     # 2. Construir índices sobre Sistematización para búsqueda determinística rápida
-    # Si un documento o correo se repite en Sistematización, se marca como conflictivo
     doc_to_sist: Dict[str, List[EstudianteSistematizacion]] = {}
     email_to_sist: Dict[str, List[EstudianteSistematizacion]] = {}
     name_to_sist: Dict[str, List[EstudianteSistematizacion]] = {}
@@ -100,17 +170,17 @@ def match_students_in_class(
             if len(candidates) == 1:
                 target_es = candidates[0]
                 if target_es.row_number not in matched_sist_rows:
+                    val_label, cross_warns = verify_cross_identity(target_es, en, "documento")
                     matches.append(StudentMatch(
                         estudiante_sist=target_es,
                         estudiante_nota=en,
                         match_key="documento",
                         match_value=doc_norm,
+                        cross_validation_label=val_label,
+                        warnings=cross_warns,
                     ))
                     matched_sist_rows.add(target_es.row_number)
                     matched_notas_rows.add(en.row_number)
-            else:
-                # Documento duplicado en sistematización: no asociar automáticamente para evitar colisión
-                pass
 
     # 4. Ronda 2: Coincidencia exacta por Correo Institucional
     for en in notas_validas:
@@ -120,7 +190,6 @@ def match_students_in_class(
         username_raw = str(en.username.value) if en.username and en.username.value is not None else ""
         user_norm = normalize_email(username_raw)
 
-        # Si el username no tiene @, probar construyendo el correo institucional
         email_candidates = [user_norm]
         if "@" not in user_norm and user_norm:
             email_candidates.append(f"{user_norm}@eafit.edu.co")
@@ -132,11 +201,14 @@ def match_students_in_class(
                 if len(cands) == 1:
                     target_es = cands[0]
                     if target_es.row_number not in matched_sist_rows:
+                        val_label, cross_warns = verify_cross_identity(target_es, en, "correo")
                         matches.append(StudentMatch(
                             estudiante_sist=target_es,
                             estudiante_nota=en,
                             match_key="correo",
                             match_value=em,
+                            cross_validation_label=val_label,
+                            warnings=cross_warns,
                         ))
                         matched_sist_rows.add(target_es.row_number)
                         matched_notas_rows.add(en.row_number)
@@ -159,12 +231,14 @@ def match_students_in_class(
             if len(cands) == 1:
                 target_es = cands[0]
                 if target_es.row_number not in matched_sist_rows:
+                    val_label, cross_warns = verify_cross_identity(target_es, en, "nombre_exacto")
                     matches.append(StudentMatch(
                         estudiante_sist=target_es,
                         estudiante_nota=en,
                         match_key="nombre_exacto",
                         match_value=full_norm,
-                        warnings=["Coincidencia realizada únicamente por nombre y apellido."],
+                        cross_validation_label=val_label,
+                        warnings=cross_warns,
                     ))
                     matched_sist_rows.add(target_es.row_number)
                     matched_notas_rows.add(en.row_number)

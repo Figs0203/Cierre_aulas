@@ -105,6 +105,28 @@ def handle_discovery_mode():
     print("=" * 76)
 
 
+def print_identity_verification_summary(res: AulaCierreResult):
+    print("\n🛡️ Verificación Cruzada de Identidad (Notas ↔ Sistematización):")
+    total_doble = sum(
+        1 for cg in res.clases for m in cg.matches
+        if "DOBLE FACTOR" in m.cross_validation_label
+    )
+    total_matches = res.total_matched
+    pct = (total_doble / total_matches * 100) if total_matches > 0 else 100.0
+    print(f"  • Coincidencias con doble factor verificado (Documento + Nombre / Correo): {total_doble}/{total_matches} ({pct:.1f}%)")
+
+    warnings_list = [
+        (m, w) for cg in res.clases for m in cg.matches for w in m.warnings
+    ]
+    if not warnings_list:
+        print("  ✅ 100% de estudiantes verificados con correspondencia de persona confirmada entre archivos.")
+    else:
+        print(f"  ⚠️ Observaciones de identidad detectadas ({len(warnings_list)}):")
+        for m, w in warnings_list[:5]:
+            nom = f"{m.estudiante_sist.nombres.value if m.estudiante_sist.nombres else ''} {m.estudiante_sist.apellidos.value if m.estudiante_sist.apellidos else ''}".strip()
+            print(f"     - Estudiante {nom}: {w}")
+
+
 def handle_cierre_execution(is_simulation: bool = False):
     modo_nombre = "MODO 2: SIMULACIÓN PREVIA" if is_simulation else "MODO 3: GENERACIÓN DE ARCHIVO AUXILIAR DE CIERRE"
     print("\n" + "=" * 76)
@@ -164,6 +186,8 @@ def handle_cierre_execution(is_simulation: bool = False):
         print(f"    - Aprobados: {aprobados} | No Aprobados: {no_aprobados} | Abandonaron: {abandonaron}")
         if cg.excluded_orange:
             print(f"    - ⚠️ Excluidos (Naranja): {len(cg.excluded_orange)}")
+
+    print_identity_verification_summary(res)
 
     print("\n🔒 Verificación de Integridad de los Archivos Oficiales:")
     for m in integrity_msgs:
@@ -262,6 +286,8 @@ def handle_direct_cierre_mode():
         print(f"  [Clase {cg.clase_id}] Aprobados: {aprob} | No Aprobados: {no_aprob} | Abandonaron: {aband}")
 
     print(f"\n  👉 Se anexarán {aprobados_total} certificados a la hoja oficial de Certificados.")
+
+    print_identity_verification_summary(res)
 
     print("\n" + "!" * 76)
     print("🛡️ GARANTÍAS DE SEGURIDAD Y RESPONSABILIDAD:")

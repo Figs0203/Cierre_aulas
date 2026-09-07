@@ -197,6 +197,7 @@ class StudentMatch:
     estudiante_nota: EstudianteNotas
     match_key: str  # "documento", "correo", "id_institucional", "nombre_exacto"
     match_value: str  # El valor que produjo la coincidencia
+    cross_validation_label: str = ""  # Etiqueta de doble factor (ej. 'DOBLE FACTOR: Documento + Nombre coinciden')
     warnings: list[str] = field(default_factory=list)
 
 

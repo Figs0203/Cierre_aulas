@@ -297,6 +297,54 @@ class TestDirectUpdater(unittest.TestCase):
             notas_stat_after = files["notas"].stat().st_mtime_ns
             self.assertEqual(notas_stat_before, notas_stat_after)
 
+    def test_row_identity_discrepancy_protection(self):
+        """Verifica que si la fila en Sistematización no corresponde a la persona esperada, se proteja y no se escriba."""
+        with tempfile.TemporaryDirectory() as tmp_str:
+            tmpdir = Path(tmp_str)
+            files = self._create_mock_files(tmpdir)
+
+            col_map = {
+                "nombres": 2, "apellidos": 3, "clase": 4, "documento": 5, "correo": 6,
+                "modulo_1": 7, "modulo_2": 8, "promedio": 12, "estado_certificacion": 13,
+            }
+
+            def tv(val, col, row):
+                return TracedValue(val, "S", "Formato", col, 1, row)
+
+            # Estudiante configurado con row_number=2, pero con documento y nombre COMPLETAMENTE DISTINTOS
+            # a lo que hay en la fila 2 del archivo ("carlos andres perez gomez", doc "1001")
+            es_discrepante = EstudianteSistematizacion(
+                row_number=2,
+                nombres=tv("ZULMA", "Nombres", 2),
+                apellidos=tv("RESTREPO", "Apellidos", 2),
+                clase=tv("5535", "Clase", 2),
+                documento=tv("99999999", "Documento", 2),
+                correo=tv("zrestrepo@eafit.edu.co", "Correo", 2),
+                estado_calculado="Aprobó",
+                column_indices=col_map,
+                raw_row_data={7: 5.0, 8: 5.0, 12: 5.0, 13: "Aprobó"},
+            )
+            en = EstudianteNotas(row_number=2)
+            m = StudentMatch(estudiante_sist=es_discrepante, estudiante_nota=en, match_key="doc", match_value="99999999")
+            cg = ClaseGroup(clase_id="5535", matches=[m])
+            res = AulaCierreResult(aula=AulaMetadata(), clases=[cg])
+
+            report = apply_direct_cierre(
+                file_paths=files,
+                result=res,
+                codigo_curso="ABBUEI205",
+                start_consecutivo=1,
+            )
+
+            # Debe haber registrado un error de discrepancia para proteger la fila
+            self.assertFalse(report.is_successful)
+            self.assertTrue(any("DISCREPANCIA EN FILA 2" in err for err in report.errors))
+
+            # Y la celda original en fila 2 debe permanecer intacta (sin sobreescritura)
+            wb_sist = openpyxl.load_workbook(files["sistematizacion"], data_only=True)
+            self.assertEqual(wb_sist["Formato"].cell(2, 7).value, 4.5)
+            wb_sist.close()
+
 
 if __name__ == "__main__":
     unittest.main()

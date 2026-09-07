@@ -43,6 +43,10 @@ class TestNormalization(unittest.TestCase):
         # Documento y correo
         self.assertEqual(normalize_document("1.020.304.050"), "1020304050")
         self.assertEqual(normalize_document("10-203-040-50"), "1020304050")
+        self.assertEqual(normalize_document("CC-1.020.304.050"), "1020304050")
+        self.assertEqual(normalize_document("TI 1020304050"), "1020304050")
+        self.assertEqual(normalize_document("PA 123456"), "PA123456")
+        self.assertEqual(normalize_document("E-987654"), "E987654")
         self.assertEqual(normalize_email(" Juan.Perez@EAFIT.EDU.CO "), "juan.perez@eafit.edu.co")
 
         # Nombre

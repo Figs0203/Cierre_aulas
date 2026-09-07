@@ -114,22 +114,26 @@ def normalize_for_comparison(text: str | None) -> str:
     return text
 
 
-def normalize_document(document: str | None) -> str:
-    """Normaliza un número de documento de identidad para matching.
+def normalize_document(document: str | int | None) -> str:
+    """Normaliza un documento de identidad para matching.
 
-    Elimina puntos, guiones, espacios y otros caracteres no numéricos.
+    Soporta diversos tipos de documentos (CC, TI, CE, Pasaportes, PEP, PPT, etc.).
+    Elimina puntos, guiones, espacios y otros caracteres no alfanuméricos.
+    Si el documento tiene prefijos comunes de tipo (ej. 'CC', 'TI', 'CE', 'PAS')
+    seguidos de números, extrae los dígitos para máxima compatibilidad.
 
     Ejemplos:
         "1.020.304.050" → "1020304050"
-        "10-203-040-50" → "1020304050"
-        " 1020304050 " → "1020304050"
+        "CC-1020304050" → "1020304050"
+        "PA 123456" → "PA123456"
+        "E-987654" → "E987654"
         None → ""
 
     Args:
-        document: Número de documento.
+        document: Número o identificador de documento.
 
     Returns:
-        Documento normalizado (solo dígitos).
+        Documento normalizado en mayúsculas sin separadores.
     """
     if document is None:
         return ""
@@ -137,8 +141,25 @@ def normalize_document(document: str | None) -> str:
     if not isinstance(document, str):
         document = str(document)
 
-    # Conservar únicamente dígitos
-    return re.sub(r"[^\d]", "", document.strip())
+    doc_clean = document.strip().upper()
+    if not doc_clean:
+        return ""
+
+    # 1. Eliminar separadores habituales (puntos, guiones, espacios, barras)
+    cleaned = re.sub(r"[\s\.\-_/]", "", doc_clean)
+
+    # 2. Si tiene prefijos de tipo (CC, TI, CE, PAS, PEP, PPT) seguidos de al menos 5 dígitos
+    m = re.match(r"^(?:CC|TI|CE|PAS|PEP|PPT)(\d{5,})$", cleaned)
+    if m:
+        return m.group(1)
+
+    # 3. Si solo contiene dígitos, retornar dígitos
+    digits_only = re.sub(r"[^\d]", "", cleaned)
+    if len(digits_only) == len(cleaned) and len(digits_only) > 0:
+        return digits_only
+
+    # 4. Si es alfanumérico (ej. Pasaporte 'PA123456', Cédula Extranjería 'E123456')
+    return re.sub(r"[^\w]", "", cleaned)
 
 
 def normalize_email(email: str | None) -> str:

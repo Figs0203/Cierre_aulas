@@ -369,14 +369,17 @@ def generate_cierre_excel(
             nom = f"{es.nombres.value if es.nombres else ''} {es.apellidos.value if es.apellidos else ''}".strip().upper()
             doc = str(es.documento.value) if es.documento else ""
             cor = str(es.correo.value) if es.correo else ""
-            adv = " | ".join(m.warnings) if m.warnings else "OK"
-            extra_notes = []
+            adv_parts = []
+            if m.cross_validation_label:
+                adv_parts.append(m.cross_validation_label)
             if es.is_hidden_row:
-                extra_notes.append("Fila oculta en Sistematización (procesada)")
+                adv_parts.append("Fila oculta en Sistematización (procesada)")
             if en.is_hidden_row:
-                extra_notes.append("Fila oculta en Notas (procesada)")
-            if extra_notes:
-                adv = (" | ".join(extra_notes) + " | " + adv) if adv != "OK" else " | ".join(extra_notes)
+                adv_parts.append("Fila oculta en Notas (procesada)")
+            if m.warnings:
+                adv_parts.extend(m.warnings)
+
+            adv = " | ".join(adv_parts) if adv_parts else "OK"
 
             row_traz = [
                 str(cg.clase_id).upper(),
