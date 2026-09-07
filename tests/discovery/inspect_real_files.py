@@ -67,8 +67,17 @@ def inspect_single_file_data(
     file_path: Path | str,
     role: str,
     target_aula: Optional[str] = None,
+    file_idx: int = 1,
+    total_files: int = 4,
 ) -> Dict[str, Any]:
-    """Extrae estructura, fórmulas, colores y estadísticas de un archivo Excel."""
+    """Extrae estructura, fórmulas, colores y estadísticas de un archivo Excel.
+
+    Optimizado para rendimiento con archivos masivos:
+    - Carga un solo libro en memoria (evita duplicación de RAM).
+    - Acota columnas y filas máximas para prevenir la trampa de 1,048,576 filas en Excel.
+    - Utiliza iter_rows(values_only=True) de alta velocidad para búsqueda de aula.
+    - Emite progreso en consola en tiempo real para retroalimentar al usuario.
+    """
     import openpyxl
     from openpyxl.utils import get_column_letter
 
@@ -81,42 +90,54 @@ def inspect_single_file_data(
         "target_aula_occurrences": [],
     }
 
+    print(f"\n   [{file_idx}/{total_files}] Cargando en memoria: {path.name}...", flush=True)
     try:
         wb_f = openpyxl.load_workbook(path, data_only=False, read_only=False)
-        wb_v = openpyxl.load_workbook(path, data_only=True, read_only=False)
     except Exception as e:
         file_data["error"] = str(e)
+        print(f"      ❌ Error al abrir {path.name}: {e}", flush=True)
         return file_data
 
-    for sheet_name in wb_f.sheetnames:
+    sheet_count = len(wb_f.sheetnames)
+    for s_idx, sheet_name in enumerate(wb_f.sheetnames, start=1):
+        print(f"      • Analizando hoja {s_idx}/{sheet_count}: '{sheet_name}'...", end="", flush=True)
         ws_f = wb_f[sheet_name]
-        ws_v = wb_v[sheet_name]
+
+        # Acotar columnas y filas de escaneo para evitar celdas vacías formateadas hasta el fin de Excel
+        raw_max_row = ws_f.max_row or 1
+        raw_max_col = ws_f.max_column or 1
+        scan_cols = min(raw_max_col, 80)
+        scan_rows_sample = min(raw_max_row, 500)
 
         # 1. Dimensiones y combinadas
         merged_ranges = [str(m) for m in ws_f.merged_cells.ranges]
         hidden_rows = [r for r, rd in ws_f.row_dimensions.items() if rd.hidden]
         hidden_cols = [c for c, cd in ws_f.column_dimensions.items() if cd.hidden]
 
-        # 2. Encabezados
+        # 2. Encabezados (inspección de las primeras 10 filas)
         best_header_row = 1
         max_text_cols = 0
-        for r in range(1, min(10, ws_f.max_row + 1)):
-            text_count = sum(1 for c in range(1, ws_f.max_column + 1) if ws_f.cell(r, c).value and isinstance(ws_f.cell(r, c).value, str))
+        for r in range(1, min(10, raw_max_row + 1)):
+            text_count = sum(1 for c in range(1, scan_cols + 1) if ws_f.cell(r, c).value and isinstance(ws_f.cell(r, c).value, str))
             if text_count > max_text_cols:
                 max_text_cols = text_count
                 best_header_row = r
 
         raw_headers: List[Optional[str]] = []
-        for c in range(1, ws_f.max_column + 1):
+        for c in range(1, scan_cols + 1):
             val = ws_f.cell(best_header_row, c).value
             raw_headers.append(str(val).strip() if val is not None else None)
 
+        # Recortar columnas vacías al final
+        while raw_headers and raw_headers[-1] is None:
+            raw_headers.pop()
+
         header_analysis = analyze_headers(raw_headers)
 
-        # 3. Fórmulas
+        # 3. Fórmulas (inspección acotada a primeras 300 filas)
         formulas_by_header: Dict[str, List[Tuple[int, str]]] = {}
-        for r in range(1, min(ws_f.max_row + 1, 300)):
-            for c in range(1, min(ws_f.max_column + 1, 60)):
+        for r in range(1, min(raw_max_row + 1, 300)):
+            for c in range(1, min(scan_cols + 1, 60)):
                 cell_val = ws_f.cell(r, c).value
                 if cell_val and isinstance(cell_val, str) and cell_val.startswith("="):
                     hname = raw_headers[c - 1] if c <= len(raw_headers) and raw_headers[c - 1] else f"Col_{get_column_letter(c)}"
@@ -124,10 +145,10 @@ def inspect_single_file_data(
                         formulas_by_header[hname] = []
                     formulas_by_header[hname].append((r, cell_val))
 
-        # 4. Fills
+        # 4. Fills (inspección acotada a primeras 500 filas)
         fill_inventory: Dict[str, List[str]] = {}
-        for r in range(1, min(ws_f.max_row + 1, 500)):
-            for c in range(1, min(ws_f.max_column + 1, 60)):
+        for r in range(1, min(raw_max_row + 1, 500)):
+            for c in range(1, min(scan_cols + 1, 60)):
                 fill = ws_f.cell(r, c).fill
                 desc = describe_cell_fill(fill)
                 if desc != "sin color":
@@ -143,13 +164,13 @@ def inspect_single_file_data(
                 rule_desc = f"Rango {cf.sqref}: " + ", ".join(f"{r.type} ({getattr(r, 'operator', 'N/A')})" for r in cf.rules)
                 cf_rules.append(rule_desc)
 
-        # 6. Muestra no-PII
+        # 6. Muestra no-PII (5 filas posteriores a encabezados)
         masked_samples = []
-        if ws_v.max_row > best_header_row:
-            for r in range(best_header_row + 1, min(best_header_row + 6, ws_v.max_row + 1)):
+        if raw_max_row > best_header_row:
+            for r in range(best_header_row + 1, min(best_header_row + 6, raw_max_row + 1)):
                 row_parts = []
-                for c in range(1, min(ws_v.max_column + 1, 15)):
-                    v = ws_v.cell(r, c).value
+                for c in range(1, min(scan_cols + 1, 15)):
+                    v = ws_f.cell(r, c).value
                     if v is not None:
                         str_v = str(v).strip()
                         if "@" in str_v:
@@ -161,20 +182,29 @@ def inspect_single_file_data(
                 if row_parts:
                     masked_samples.append(f"Fila {r}: {' | '.join(row_parts)}")
 
-        # 7. Aula objetivo
+        # 7. Aula objetivo (usando streaming de alta velocidad iter_rows)
+        aula_matches = 0
         if target_aula:
-            for r in range(1, ws_v.max_row + 1):
-                for c in range(1, ws_v.max_column + 1):
-                    v = ws_v.cell(r, c).value
-                    if v and str(v).strip().upper() == target_aula.strip().upper():
-                        hname = raw_headers[c - 1] if c <= len(raw_headers) and raw_headers[c - 1] else ""
+            clean_target = target_aula.strip().upper()
+            max_search_row = min(raw_max_row, 25000)
+            for r_idx, row_vals in enumerate(
+                ws_f.iter_rows(min_row=1, max_row=max_search_row, max_col=scan_cols, values_only=True),
+                start=1,
+            ):
+                for c_idx, val in enumerate(row_vals, start=1):
+                    if val and str(val).strip().upper() == clean_target:
+                        aula_matches += 1
+                        hname = raw_headers[c_idx - 1] if c_idx <= len(raw_headers) and raw_headers[c_idx - 1] else ""
                         file_data["target_aula_occurrences"].append(
-                            f"Hoja '{sheet_name}', Fila {r}, Col {get_column_letter(c)} ('{hname}')"
+                            f"Hoja '{sheet_name}', Fila {r_idx}, Col {get_column_letter(c_idx)} ('{hname}')"
                         )
 
+        aula_info = f" -> {aula_matches} coincidencias de '{target_aula}'" if target_aula and aula_matches > 0 else ""
+        print(f" OK ({raw_max_row} filas × {len(raw_headers)} cols){aula_info}", flush=True)
+
         file_data["sheets"][sheet_name] = {
-            "max_row": ws_f.max_row,
-            "max_column": ws_f.max_column,
+            "max_row": raw_max_row,
+            "max_column": raw_max_col,
             "dimensions": str(ws_f.dimensions),
             "merged_ranges": merged_ranges,
             "hidden_rows": hidden_rows,
@@ -189,8 +219,6 @@ def inspect_single_file_data(
         }
 
     wb_f.close()
-    wb_v.close()
-
     return file_data
 
 
@@ -211,10 +239,13 @@ def run_discovery(
     report_filename = f"discovery_{timestamp}.txt"
     report_path = out_dir / report_filename
 
-    # Inspeccionar todos los archivos
+    # Inspeccionar todos los archivos con seguimiento de progreso
+    total_files = len(file_paths)
     all_inspections: Dict[str, Dict[str, Any]] = {}
-    for role, fpath in file_paths.items():
-        all_inspections[role] = inspect_single_file_data(fpath, role, target_aula)
+    for idx, (role, fpath) in enumerate(file_paths.items(), start=1):
+        all_inspections[role] = inspect_single_file_data(
+            fpath, role, target_aula, file_idx=idx, total_files=total_files
+        )
 
     lines: List[str] = []
 
