@@ -43,17 +43,19 @@ from normalization.text import (
 def evaluate_certification_status(
     calificaciones: Dict[str, float],
     tipo_grupo: Optional[str] = None,
+    nota_final_calculated: Optional[float] = None,
 ) -> Tuple[str, float]:
     """Evalúa el estado de certificación oficial de un estudiante.
 
     Args:
         calificaciones: Diccionario {'modulo_1': nota, 'modulo_2': nota, ...}
         tipo_grupo: 'Pregrado', 'Posgrado' o None (default Pregrado).
+        nota_final_calculated: Valor de 'Calculated Final' extraído directamente de Notas.
 
     Returns:
         Tupla (estado, promedio):
-          - estado: 'Aprobó', 'No aprobó' o 'Abandonó'.
-          - promedio: Promedio aritmético redondeado a 2 decimales.
+          - estado: 'APROBÓ', 'NO APROBÓ' o 'ABANDONÓ' (en mayúsculas oficiales).
+          - promedio: Nota de 'Calculated Final' (o promedio de módulos como fallback).
     """
     # Extraer valores numéricos de módulos
     mod_keys = sorted([k for k in calificaciones if k.startswith("modulo_")])
@@ -65,14 +67,20 @@ def evaluate_certification_status(
         except (ValueError, TypeError):
             pass
 
-    if not notas_vals:
-        return "Abandonó", 0.0
+    # Asignar promedio: prioridad a Calculated Final de notas
+    if nota_final_calculated is not None:
+        promedio = nota_final_calculated
+    elif notas_vals:
+        promedio = round(sum(notas_vals) / len(notas_vals), 2)
+    else:
+        promedio = 0.0
 
-    promedio = round(sum(notas_vals) / len(notas_vals), 2)
+    if not notas_vals and nota_final_calculated is None:
+        return "ABANDONÓ", 0.0
 
-    # 1. Regla oficial de "Abandonó":
+    # 1. Regla oficial de "ABANDONÓ":
     # Promedio = 0, ó todas las notas en 0, ó los módulos 3 y 4 en 0
-    all_zero = all(n == 0.0 for n in notas_vals)
+    all_zero = all(n == 0.0 for n in notas_vals) if notas_vals else (promedio == 0.0)
     m3_zero = False
     m4_zero = False
     if len(notas_vals) >= 3 and notas_vals[2] == 0.0:
@@ -81,7 +89,7 @@ def evaluate_certification_status(
         m4_zero = True
 
     if promedio == 0.0 or all_zero or (m3_zero and m4_zero):
-        return "Abandonó", promedio
+        return "ABANDONÓ", promedio
 
     # 2. Umbral según tipo de grupo (Pregrado >= 3.0, Posgrado >= 3.5)
     tipo_norm = str(tipo_grupo).strip().lower() if tipo_grupo else "pregrado"
@@ -91,9 +99,9 @@ def evaluate_certification_status(
 
     # Todos los módulos deben cumplir el umbral mínimo
     if any(n < threshold for n in notas_vals):
-        return "No aprobó", promedio
+        return "NO APROBÓ", promedio
 
-    return "Aprobó", promedio
+    return "APROBÓ", promedio
 
 
 def apply_rules_to_match(
@@ -104,12 +112,12 @@ def apply_rules_to_match(
 ) -> None:
     """Aplica las reglas oficiales a un match de estudiante, actualizando sus campos.
 
-    Modifica in-place match.estudiante_sist con los valores calculados.
+    Modifica in-place match.estudiante_sist con los valores calculados en MAYÚSCULAS.
     """
     es = match.estudiante_sist
     en = match.estudiante_nota
 
-    # Extraer calificaciones numéricas de notas
+    # Extraer calificaciones numéricas de módulos
     califs_dict: Dict[str, float] = {}
     for m_key, tv in en.calificaciones_modulos.items():
         if tv and tv.value is not None:
@@ -118,14 +126,28 @@ def apply_rules_to_match(
             except ValueError:
                 pass
 
+    # Extraer valor exacto de Calculated Final de Notas
+    nota_final_val = None
+    if en.nota_final and en.nota_final.value is not None:
+        try:
+            nota_final_val = float(str(en.nota_final.value).replace(",", "."))
+        except (ValueError, TypeError):
+            nota_final_val = en.nota_final.value
+
     tipo_grupo_str = str(es.tipo_grupo.value) if es.tipo_grupo and es.tipo_grupo.value else "Pregrado"
 
-    estado, promedio = evaluate_certification_status(califs_dict, tipo_grupo=tipo_grupo_str)
+    estado, promedio = evaluate_certification_status(
+        califs_dict,
+        tipo_grupo=tipo_grupo_str,
+        nota_final_calculated=nota_final_val if isinstance(nota_final_val, (int, float)) else None,
+    )
 
-    es.estado_calculado = estado
-    es.elaboro_certificado_calculado = CERTIFICADO_SI if estado == "Aprobó" else CERTIFICADO_NO
-    es.codigo_certificado_calculado = codigo_curso if estado == "Aprobó" else VALOR_NO_APLICA
-    es.envio_certificado_calculado = CERTIFICADO_SI if estado == "Aprobó" else CERTIFICADO_NO
+    es.estado_calculado = estado.upper()
+    is_aprobado = "APROB" in es.estado_calculado and "NO" not in es.estado_calculado
+
+    es.elaboro_certificado_calculado = "SI" if is_aprobado else "NO"
+    es.codigo_certificado_calculado = str(codigo_curso).strip().upper() if is_aprobado else "NO APLICA"
+    es.envio_certificado_calculado = "SI" if is_aprobado else "NO"
 
     # Fecha de finalización para la fecha de envío
     f_fin = None
@@ -159,10 +181,11 @@ def apply_rules_to_match(
     if "modulo_5" in califs_dict:
         es.raw_row_data[c_m5] = califs_dict["modulo_5"]
 
+    # Copiar y pegar directamente Calculated Final en la columna de promedio
     es.raw_row_data[c_prom] = promedio
-    es.raw_row_data[c_est] = estado
+    es.raw_row_data[c_est] = es.estado_calculado
     es.raw_row_data[c_elab] = es.elaboro_certificado_calculado
     es.raw_row_data[c_cod] = es.codigo_certificado_calculado
     es.raw_row_data[c_env] = es.envio_certificado_calculado
     if f_fin:
-        es.raw_row_data[c_fenv] = str(f_fin)
+        es.raw_row_data[c_fenv] = str(f_fin).upper()

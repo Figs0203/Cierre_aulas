@@ -127,9 +127,9 @@ def generate_cierre_excel(
 
     curr_r = start_r + 2
     for cg in result.clases:
-        aprobados = sum(1 for m in cg.matches if m.estudiante_sist.estado_calculado == "Aprobó")
-        no_aprobados = sum(1 for m in cg.matches if m.estudiante_sist.estado_calculado == "No aprobó")
-        abandonaron = sum(1 for m in cg.matches if m.estudiante_sist.estado_calculado == "Abandonó")
+        aprobados = sum(1 for m in cg.matches if m.estudiante_sist.estado_calculado and "APROB" in m.estudiante_sist.estado_calculado.upper() and "NO" not in m.estudiante_sist.estado_calculado.upper())
+        no_aprobados = sum(1 for m in cg.matches if m.estudiante_sist.estado_calculado and "NO APROB" in m.estudiante_sist.estado_calculado.upper())
+        abandonaron = sum(1 for m in cg.matches if m.estudiante_sist.estado_calculado and "ABANDON" in m.estudiante_sist.estado_calculado.upper())
 
         row_vals = [
             str(cg.clase_id),
@@ -153,34 +153,41 @@ def generate_cierre_excel(
     ws_sist = wb.create_sheet(title="SISTEMATIZACION")
     ws_sist.views.sheetView[0].showGridLines = True
 
-    # Encabezados en fila 1
+    # Encabezados en fila 1 (en mayúsculas oficiales)
     for c_idx, h_text in enumerate(sist_headers, start=1):
-        cell = ws_sist.cell(1, c_idx, h_text)
+        cell = ws_sist.cell(1, c_idx, str(h_text).upper())
         cell.font = _FONT_HEADER
         cell.fill = _FILL_PRIMARY
         cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
 
-    sist_r = 2
+    # Recopilar todos los estudiantes del aula y ordenarlos por su fila original en 'Formato'
+    all_sist_students: List[EstudianteSistematizacion] = []
     for cg in result.clases:
-        # Primero los estudiantes que tuvieron match
         for m in cg.matches:
-            es = m.estudiante_sist
-            # Escribir toda la fila de 55 columnas respetando raw_row_data
-            for col_idx in range(1, len(sist_headers) + 1):
-                val = es.raw_row_data.get(col_idx, None)
-                cell = ws_sist.cell(sist_r, col_idx, val)
-                cell.font = _FONT_BODY
-                cell.border = _BORDER_THIN
-            sist_r += 1
-
-        # Luego los que quedaron sin notas (se conservan sus datos originales sin sobreescribir)
+            all_sist_students.append(m.estudiante_sist)
         for es in cg.unmatched_sist:
-            for col_idx in range(1, len(sist_headers) + 1):
-                val = es.raw_row_data.get(col_idx, None)
-                cell = ws_sist.cell(sist_r, col_idx, val)
-                cell.font = _FONT_BODY
-                cell.border = _BORDER_THIN
-            sist_r += 1
+            all_sist_students.append(es)
+
+    # ORDEN EXACTO: el mismo orden de filas de Sistematizacion_Cursos_COIN_2026.xlsx
+    all_sist_students.sort(key=lambda x: x.row_number)
+
+    col_correo_idx = None
+    if all_sist_students and all_sist_students[0].column_indices:
+        col_correo_idx = all_sist_students[0].column_indices.get("correo")
+
+    sist_r = 2
+    for es in all_sist_students:
+        for col_idx in range(1, len(sist_headers) + 1):
+            val = es.raw_row_data.get(col_idx, None)
+            # Todo en mayúsculas, excepto correos electrónicos
+            if isinstance(val, str) and not val.startswith("="):
+                is_email = (col_idx == col_correo_idx) or ("@" in val and "." in val)
+                if not is_email:
+                    val = val.upper()
+            cell = ws_sist.cell(sist_r, col_idx, val)
+            cell.font = _FONT_BODY
+            cell.border = _BORDER_THIN
+        sist_r += 1
 
     # ============================================================
     # HOJA 3: CERTIFICADOS (13 Columnas Oficiales)
@@ -196,79 +203,79 @@ def generate_cierre_excel(
     ]
 
     for c_idx, h_text in enumerate(cert_headers, start=1):
-        cell = ws_cert.cell(1, c_idx, h_text)
+        cell = ws_cert.cell(1, c_idx, h_text.upper())
         cell.font = _FONT_HEADER
         cell.fill = _FILL_HEADER
         cell.alignment = Alignment(horizontal="center", vertical="center")
 
+    # Recopilar todos los estudiantes aprobados de todas las clases
+    all_approved: List[Tuple[StudentMatch, ClaseGroup]] = []
+    for cg in result.clases:
+        for m in cg.matches:
+            est_status = str(m.estudiante_sist.estado_calculado or "").strip().upper()
+            if "APROB" in est_status and "NO" not in est_status:
+                all_approved.append((m, cg))
+
+    # ORDEN EXACTO: el mismo orden de aparición en la hoja 'Formato' de Sistematización
+    all_approved.sort(key=lambda item: item[0].estudiante_sist.row_number)
+
     cert_r = 2
     current_n = start_consecutivo
 
-    for cg in result.clases:
-        # Metadatos para Ciclo y Docente COIN
+    for m, cg in all_approved:
+        es = m.estudiante_sist
         meta = (metadatos_control or {}).get(cg.clase_id) or AulaMetadata()
         programa_str = meta.programa_academico.value if meta.programa_academico else ""
         catalogo_str = meta.catalogo.value if meta.catalogo else ""
         f_ini_dt = meta.fecha_inicio.value if meta.fecha_inicio else None
         f_fin_dt = meta.fecha_fin.value if meta.fecha_fin else None
 
-        # Formato de fechas para Ciclo
         f_ini_str = format_ciclo_date(f_ini_dt) if f_ini_dt else ""
         f_fin_str = format_ciclo_date(f_fin_dt) if f_fin_dt else ""
-
-        # Formato de fecha para columna 'Fecha de envío' (DD-mes-AAAA)
         f_envio_cert_str = format_certificate_date(f_fin_dt) if f_fin_dt else ""
 
-        # Formatear Ciclo
-        ciclo_val = format_ciclo(cg.clase_id, catalogo_str, programa_str, f_ini_str, f_fin_str)
+        ciclo_val = format_ciclo(cg.clase_id, catalogo_str, programa_str, f_ini_str, f_fin_str).upper()
 
-        # Formador Líder para Docente COIN
         formador_lider = ""
-        for m in cg.matches:
-            if m.estudiante_sist.formador_lider and m.estudiante_sist.formador_lider.value:
-                formador_lider = str(m.estudiante_sist.formador_lider.value).strip()
-                break
+        if es.formador_lider and es.formador_lider.value:
+            formador_lider = str(es.formador_lider.value).strip()
+        elif meta.docente_principal and meta.docente_principal.value:
+            formador_lider = str(meta.docente_principal.value).strip()
 
-        docente_coin_val = format_docente_coin(codigo_curso, formador_lider)
+        docente_coin_val = format_docente_coin(codigo_curso, formador_lider).upper()
         semestre_val = get_semester(f_fin_dt) if f_fin_dt else 1
         ano_val = f_fin_dt.year if isinstance(f_fin_dt, (date, datetime)) else 2026
 
-        # Solo incluir estudiantes que APROBARON
-        aprobados_clase = [m for m in cg.matches if m.estudiante_sist.estado_calculado == "Aprobó"]
+        nom = str(es.nombres.value if es.nombres else "").strip().upper()
+        ape = str(es.apellidos.value if es.apellidos else "").strip().upper()
+        doc = es.documento.value if es.documento else ""
+        cor = str(es.correo.value if es.correo else "").strip()  # CORREOS SIN MAYÚSCULAS
 
-        for idx_ap, m in enumerate(aprobados_clase):
-            es = m.estudiante_sist
-            nom = es.nombres.value if es.nombres else ""
-            ape = es.apellidos.value if es.apellidos else ""
-            doc = es.documento.value if es.documento else ""
-            cor = es.correo.value if es.correo else ""
+        row_cert = [
+            current_n,
+            ciclo_val,
+            docente_coin_val,
+            nom,
+            ape,
+            doc,
+            cor,
+            str(codigo_curso).strip().upper(),
+            f_envio_cert_str.upper(),
+            ano_val,
+            semestre_val,
+            1,  # Siempre 1 por cada estudiante aprobado
+            None,
+        ]
 
-            # En certificados oficiales, Ciclo y Total Certificados suelen colocarse en la primera fila o en todas
-            row_cert = [
-                current_n,
-                ciclo_val,
-                docente_coin_val,
-                nom,
-                ape,
-                doc,
-                cor,
-                codigo_curso,
-                f_envio_cert_str,
-                ano_val,
-                semestre_val,
-                len(aprobados_clase) if idx_ap == 0 else None,
-                None,
-            ]
+        for c_idx, val in enumerate(row_cert, start=1):
+            cell = ws_cert.cell(cert_r, c_idx, val)
+            cell.font = _FONT_BODY
+            cell.border = _BORDER_THIN
+            if c_idx in (1, 10, 11, 12):
+                cell.alignment = Alignment(horizontal="center")
 
-            for c_idx, val in enumerate(row_cert, start=1):
-                cell = ws_cert.cell(cert_r, c_idx, val)
-                cell.font = _FONT_BODY
-                cell.border = _BORDER_THIN
-                if c_idx in (1, 10, 11, 12):
-                    cell.alignment = Alignment(horizontal="center")
-
-            current_n += 1
-            cert_r += 1
+        current_n += 1
+        cert_r += 1
 
     # ============================================================
     # HOJA 4: ACTUALIZACION_CONTROL
@@ -310,7 +317,7 @@ def generate_cierre_excel(
         "Fila en Sistematización", "Fila en Notas", "Estado Calculado", "Advertencias / Notas"
     ]
     for c_idx, h in enumerate(traz_headers, start=1):
-        cell = ws_traz.cell(1, c_idx, h)
+        cell = ws_traz.cell(1, c_idx, h.upper())
         cell.font = _FONT_HEADER
         cell.fill = _FILL_PRIMARY
         cell.alignment = Alignment(horizontal="center")
@@ -320,7 +327,7 @@ def generate_cierre_excel(
         for m in cg.matches:
             es = m.estudiante_sist
             en = m.estudiante_nota
-            nom = f"{es.nombres.value if es.nombres else ''} {es.apellidos.value if es.apellidos else ''}".strip()
+            nom = f"{es.nombres.value if es.nombres else ''} {es.apellidos.value if es.apellidos else ''}".strip().upper()
             doc = str(es.documento.value) if es.documento else ""
             cor = str(es.correo.value) if es.correo else ""
             adv = " | ".join(m.warnings) if m.warnings else "OK"
@@ -333,15 +340,15 @@ def generate_cierre_excel(
                 adv = (" | ".join(extra_notes) + " | " + adv) if adv != "OK" else " | ".join(extra_notes)
 
             row_traz = [
-                str(cg.clase_id),
+                str(cg.clase_id).upper(),
                 nom,
-                doc,
+                str(doc).strip().upper(),
                 cor,
-                m.match_key,
+                str(m.match_key).upper(),
                 es.row_number,
                 en.row_number,
-                es.estado_calculado or "",
-                adv,
+                str(es.estado_calculado or "").upper(),
+                adv.upper(),
             ]
             for c_idx, val in enumerate(row_traz, start=1):
                 cell = ws_traz.cell(traz_r, c_idx, val)
@@ -351,12 +358,12 @@ def generate_cierre_excel(
 
         # Agregar advertencias para los excluidos (naranja)
         for en in cg.excluded_orange:
-            nom = f"{en.first_name.value if en.first_name else ''} {en.last_name.value if en.last_name else ''}".strip()
+            nom = f"{en.first_name.value if en.first_name else ''} {en.last_name.value if en.last_name else ''}".strip().upper()
             adv_orange = "Estudiante con relleno naranja en Notas (retirado/excluido del proceso)."
             if en.is_hidden_row:
                 adv_orange += " [Fila oculta en Notas]"
             row_traz = [
-                str(cg.clase_id),
+                str(cg.clase_id).upper(),
                 nom,
                 str(en.org_defined_id.value) if en.org_defined_id else "",
                 str(en.username.value) if en.username else "",
@@ -364,7 +371,7 @@ def generate_cierre_excel(
                 "N/A",
                 en.row_number,
                 "EXCLUIDO",
-                adv_orange,
+                adv_orange.upper(),
             ]
             for c_idx, val in enumerate(row_traz, start=1):
                 cell = ws_traz.cell(traz_r, c_idx, val)
@@ -375,20 +382,20 @@ def generate_cierre_excel(
 
         # Agregar advertencias para los que quedaron sin notas
         for es in cg.unmatched_sist:
-            nom = f"{es.nombres.value if es.nombres else ''} {es.apellidos.value if es.apellidos else ''}".strip()
+            nom = f"{es.nombres.value if es.nombres else ''} {es.apellidos.value if es.apellidos else ''}".strip().upper()
             adv_sist = "Estudiante registrado en Sistematización pero sin registro en el archivo de Notas."
             if es.is_hidden_row:
                 adv_sist += " [Fila oculta en Sistematización]"
             row_traz = [
-                str(cg.clase_id),
+                str(cg.clase_id).upper(),
                 nom,
-                str(es.documento.value) if es.documento else "",
-                str(es.correo.value) if es.correo else "",
+                str(es.documento.value if es.documento else "").upper(),
+                str(es.correo.value if es.correo else ""),
                 "SIN NOTAS",
                 es.row_number,
                 "N/A",
                 "SIN NOTAS",
-                adv_sist,
+                adv_sist.upper(),
             ]
             for c_idx, val in enumerate(row_traz, start=1):
                 cell = ws_traz.cell(traz_r, c_idx, val)

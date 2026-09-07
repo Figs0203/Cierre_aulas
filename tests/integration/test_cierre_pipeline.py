@@ -107,17 +107,21 @@ class TestCierrePipelineIntegration(unittest.TestCase):
             # 5. Hoja 3: CERTIFICADOS
             ws_cert = wb["CERTIFICADOS"]
             # Encabezados: N°, Ciclo, Docente COIN, Nombres, Apellidos, ...
-            self.assertEqual(ws_cert.cell(1, 1).value, "N°")
-            self.assertEqual(ws_cert.cell(1, 2).value, "Ciclo")
-            self.assertEqual(ws_cert.cell(1, 3).value, "Docente COIN")
+            self.assertEqual(str(ws_cert.cell(1, 1).value).upper(), "N°")
+            self.assertEqual(str(ws_cert.cell(1, 2).value).upper(), "CICLO")
+            self.assertEqual(str(ws_cert.cell(1, 3).value).upper(), "DOCENTE COIN")
 
             # Solo estudiantes aprobados deben estar en certificados
             cert_rows = ws_cert.max_row
             # El estudiante naranja (Carlos Restrepo) NO debe estar en certificados
-            nombres_cert = [str(ws_cert.cell(r, 4).value or "") for r in range(2, cert_rows + 1)]
-            self.assertNotIn("Carlos Andres", nombres_cert)
+            nombres_cert = [str(ws_cert.cell(r, 4).value or "").upper() for r in range(2, cert_rows + 1)]
+            self.assertNotIn("CARLOS ANDRES", nombres_cert)
             # Los estudiantes aprobados SÍ deben estar
-            self.assertIn("Juan Camilo", nombres_cert)
+            self.assertTrue(any("JUAN CAMILO" in n for n in nombres_cert))
+
+            # Cada estudiante aprobado debe tener Total certificados = 1
+            totales_cert = [ws_cert.cell(r, 12).value for r in range(2, cert_rows + 1)]
+            self.assertTrue(all(t == 1 for t in totales_cert), f"Total certificados debe ser 1 en todas las filas: {totales_cert}")
 
             # El consecutivo N° debe ser secuencial
             consecutivos = [ws_cert.cell(r, 1).value for r in range(2, cert_rows + 1)]
@@ -128,13 +132,13 @@ class TestCierrePipelineIntegration(unittest.TestCase):
             # 6. Hoja 4: ACTUALIZACION_CONTROL
             ws_ctrl = wb["ACTUALIZACION_CONTROL"]
             self.assertGreater(ws_ctrl.max_row, 1)
-            self.assertEqual(ws_ctrl.cell(1, 3).value, "Columna Objetivo")
-            self.assertEqual(ws_ctrl.cell(2, 3).value, "CERTIFICADOS")
+            self.assertEqual(str(ws_ctrl.cell(1, 3).value).upper(), "COLUMNA OBJETIVO")
+            self.assertEqual(str(ws_ctrl.cell(2, 3).value).upper(), "CERTIFICADOS")
 
             # 7. Hoja 5: VALIDACIONES_Y_TRAZABILIDAD
             ws_traz = wb["VALIDACIONES_Y_TRAZABILIDAD"]
             self.assertGreater(ws_traz.max_row, 1)
-            traz_content = [str(ws_traz.cell(r, 8).value or "") for r in range(2, ws_traz.max_row + 1)]
+            traz_content = [str(ws_traz.cell(r, 8).value or "").upper() for r in range(2, ws_traz.max_row + 1)]
             # Debe incluir al estudiante excluido
             self.assertTrue(any("EXCLUIDO" in v for v in traz_content))
 
@@ -182,7 +186,7 @@ class TestCierrePipelineIntegration(unittest.TestCase):
             ws_t = wb_out["VALIDACIONES_Y_TRAZABILIDAD"]
             adv_texts = [str(ws_t.cell(r, 9).value or "") for r in range(2, ws_t.max_row + 1)]
             self.assertTrue(
-                any("Fila oculta" in a for a in adv_texts),
+                any("FILA OCULTA" in a.upper() for a in adv_texts),
                 "No se registró la trazabilidad de fila oculta",
             )
             wb_out.close()
