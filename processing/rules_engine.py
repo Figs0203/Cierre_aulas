@@ -76,9 +76,9 @@ def evaluate_certification_status(
         promedio = 0.0
 
     if not notas_vals and nota_final_calculated is None:
-        return "ABANDONÓ", 0.0
+        return "Abandonó", 0.0
 
-    # 1. Regla oficial de "ABANDONÓ":
+    # 1. Regla oficial de "Abandonó":
     # Promedio = 0, ó todas las notas en 0, ó los módulos 3 y 4 en 0
     all_zero = all(n == 0.0 for n in notas_vals) if notas_vals else (promedio == 0.0)
     m3_zero = False
@@ -89,7 +89,7 @@ def evaluate_certification_status(
         m4_zero = True
 
     if promedio == 0.0 or all_zero or (m3_zero and m4_zero):
-        return "ABANDONÓ", promedio
+        return "Abandonó", promedio
 
     # 2. Umbral según tipo de grupo (Pregrado >= 3.0, Posgrado >= 3.5)
     tipo_norm = str(tipo_grupo).strip().lower() if tipo_grupo else "pregrado"
@@ -99,9 +99,9 @@ def evaluate_certification_status(
 
     # Todos los módulos deben cumplir el umbral mínimo
     if any(n < threshold for n in notas_vals):
-        return "NO APROBÓ", promedio
+        return "No aprobó", promedio
 
-    return "APROBÓ", promedio
+    return "Aprobó", promedio
 
 
 def apply_rules_to_match(
@@ -112,7 +112,7 @@ def apply_rules_to_match(
 ) -> None:
     """Aplica las reglas oficiales a un match de estudiante, actualizando sus campos.
 
-    Modifica in-place match.estudiante_sist con los valores calculados en MAYÚSCULAS.
+    Modifica in-place match.estudiante_sist con los valores calculados.
     """
     es = match.estudiante_sist
     en = match.estudiante_nota
@@ -142,12 +142,12 @@ def apply_rules_to_match(
         nota_final_calculated=nota_final_val if isinstance(nota_final_val, (int, float)) else None,
     )
 
-    es.estado_calculado = estado.upper()
-    is_aprobado = "APROB" in es.estado_calculado and "NO" not in es.estado_calculado
+    es.estado_calculado = estado
+    is_aprobado = estado == "Aprobó"
 
-    es.elaboro_certificado_calculado = "SI" if is_aprobado else "NO"
-    es.codigo_certificado_calculado = str(codigo_curso).strip().upper() if is_aprobado else "NO APLICA"
-    es.envio_certificado_calculado = "SI" if is_aprobado else "NO"
+    es.elaboro_certificado_calculado = CERTIFICADO_SI if is_aprobado else CERTIFICADO_NO
+    es.codigo_certificado_calculado = str(codigo_curso).strip().upper() if is_aprobado else VALOR_NO_APLICA
+    es.envio_certificado_calculado = CERTIFICADO_SI if is_aprobado else CERTIFICADO_NO
 
     # Fecha de finalización para la fecha de envío
     f_fin = None

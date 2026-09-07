@@ -47,6 +47,13 @@ _BORDER_THIN = Border(
     bottom=Side(style="thin", color="D9D9D9"),
 )
 
+_BORDER_CLASS_SEPARATOR = Border(
+    left=Side(style="thin", color="D9D9D9"),
+    right=Side(style="thin", color="D9D9D9"),
+    top=Side(style="thin", color="D9D9D9"),
+    bottom=Side(style="medium", color="000000"),
+)
+
 
 def generate_cierre_excel(
     result: AulaCierreResult,
@@ -175,15 +182,32 @@ def generate_cierre_excel(
     if all_sist_students and all_sist_students[0].column_indices:
         col_correo_idx = all_sist_students[0].column_indices.get("correo")
 
+    SPECIAL_CASING_VALUES = {
+        "aprobó": "Aprobó",
+        "aprobo": "Aprobó",
+        "no aprobó": "No aprobó",
+        "no aprobo": "No aprobó",
+        "abandonó": "Abandonó",
+        "abandono": "Abandonó",
+        "no aplica": "No aplica",
+    }
+
     sist_r = 2
     for es in all_sist_students:
         for col_idx in range(1, len(sist_headers) + 1):
             val = es.raw_row_data.get(col_idx, None)
-            # Todo en mayúsculas, excepto correos electrónicos
+            # Todo en mayúsculas, excepto correos electrónicos y estados con formato oficial exacto
             if isinstance(val, str) and not val.startswith("="):
                 is_email = (col_idx == col_correo_idx) or ("@" in val and "." in val)
-                if not is_email:
-                    val = val.upper()
+                if is_email:
+                    pass  # Mantener correos tal cual
+                else:
+                    val_clean = val.strip()
+                    val_lower = val_clean.lower()
+                    if val_lower in SPECIAL_CASING_VALUES:
+                        val = SPECIAL_CASING_VALUES[val_lower]
+                    else:
+                        val = val.upper()
             cell = ws_sist.cell(sist_r, col_idx, val)
             cell.font = _FONT_BODY
             cell.border = _BORDER_THIN
@@ -212,8 +236,8 @@ def generate_cierre_excel(
     all_approved: List[Tuple[StudentMatch, ClaseGroup]] = []
     for cg in result.clases:
         for m in cg.matches:
-            est_status = str(m.estudiante_sist.estado_calculado or "").strip().upper()
-            if "APROB" in est_status and "NO" not in est_status:
+            est_status = str(m.estudiante_sist.estado_calculado or "").strip().lower()
+            if "aprob" in est_status and "no" not in est_status:
                 all_approved.append((m, cg))
 
     # ORDEN EXACTO: el mismo orden de aparición en la hoja 'Formato' de Sistematización
@@ -222,7 +246,7 @@ def generate_cierre_excel(
     cert_r = 2
     current_n = start_consecutivo
 
-    for m, cg in all_approved:
+    for idx, (m, cg) in enumerate(all_approved):
         es = m.estudiante_sist
         meta = (metadatos_control or {}).get(cg.clase_id) or AulaMetadata()
         programa_str = meta.programa_academico.value if meta.programa_academico else ""
@@ -242,7 +266,8 @@ def generate_cierre_excel(
         elif meta.docente_principal and meta.docente_principal.value:
             formador_lider = str(meta.docente_principal.value).strip()
 
-        docente_coin_val = format_docente_coin(codigo_curso, formador_lider).upper()
+        # Docente COIN completamente en MAYÚSCULAS
+        docente_coin_val = format_docente_coin(codigo_curso, formador_lider).strip().upper()
         semestre_val = get_semester(f_fin_dt) if f_fin_dt else 1
         ano_val = f_fin_dt.year if isinstance(f_fin_dt, (date, datetime)) else 2026
 
@@ -267,10 +292,24 @@ def generate_cierre_excel(
             None,
         ]
 
+        # Separación con borde inferior grueso al terminar cada clase distinta
+        current_clase = str(es.clase.value if es.clase and es.clase.value else cg.clase_id).strip()
+        is_last_of_class = False
+        if idx == len(all_approved) - 1:
+            is_last_of_class = True
+        else:
+            next_m, next_cg = all_approved[idx + 1]
+            next_es = next_m.estudiante_sist
+            next_clase = str(next_es.clase.value if next_es.clase and next_es.clase.value else next_cg.clase_id).strip()
+            if current_clase != next_clase:
+                is_last_of_class = True
+
+        border_cell = _BORDER_CLASS_SEPARATOR if is_last_of_class else _BORDER_THIN
+
         for c_idx, val in enumerate(row_cert, start=1):
             cell = ws_cert.cell(cert_r, c_idx, val)
             cell.font = _FONT_BODY
-            cell.border = _BORDER_THIN
+            cell.border = border_cell
             if c_idx in (1, 10, 11, 12):
                 cell.alignment = Alignment(horizontal="center")
 
@@ -347,7 +386,7 @@ def generate_cierre_excel(
                 str(m.match_key).upper(),
                 es.row_number,
                 en.row_number,
-                str(es.estado_calculado or "").upper(),
+                str(es.estado_calculado or ""),
                 adv.upper(),
             ]
             for c_idx, val in enumerate(row_traz, start=1):

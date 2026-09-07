@@ -272,3 +272,124 @@ class TestOrangeFillDetection:
         from config.colors import is_orange_fill_exact
         # No debe lanzar TypeError: object of type 'MockRGB' has no len()
         assert is_orange_fill_exact(MockRGB()) is False or is_orange_fill_exact("FFA500") is True
+
+
+# ============================================================
+# AJUSTES CONFIRMADOS DE MAYÚSCULAS, ESTADOS Y BORDES DE CLASE
+# ============================================================
+
+
+class TestFormatoFeedbackAjustes:
+    """Verifica los ajustes solicitados por el usuario respecto a mayúsculas, estados y bordes."""
+
+    def test_estados_y_no_aplica_mantienen_formato_oficial(self):
+        from processing.rules_engine import evaluate_certification_status
+        from config.settings import VALOR_NO_APLICA
+
+        # Aprobó
+        st_apr, _ = evaluate_certification_status({"modulo_1": 4.0, "modulo_2": 4.0})
+        assert st_apr == "Aprobó"
+
+        # No aprobó
+        st_no, _ = evaluate_certification_status({"modulo_1": 2.0, "modulo_2": 4.0})
+        assert st_no == "No aprobó"
+
+        # Abandonó
+        st_ab, _ = evaluate_certification_status({"modulo_1": 0.0, "modulo_2": 0.0})
+        assert st_ab == "Abandonó"
+
+        # No aplica
+        assert VALOR_NO_APLICA == "No aplica"
+
+    def test_separador_de_clases_y_docente_coin_mayusculas(self, tmp_path):
+        import openpyxl
+        from core.models import (
+            AulaCierreResult,
+            ClaseGroup,
+            StudentMatch,
+            EstudianteSistematizacion,
+            EstudianteNotas,
+            TracedValue,
+            AulaMetadata,
+        )
+        from output.excel_generator import generate_cierre_excel
+
+        def tv(val):
+            return TracedValue(value=val, source_file="S", source_sheet="F", source_column="C", source_col_idx=1, source_row=1)
+
+        es1 = EstudianteSistematizacion(
+            row_number=5,
+            nombres=tv("Juan"),
+            apellidos=tv("Perez"),
+            clase=tv("5535"),
+            documento=tv("1001"),
+            correo=tv("jperez@eafit.edu.co"),
+            estado_calculado="Aprobó",
+            raw_row_data={1: "Juan", 2: "Perez", 3: "Aprobó", 4: "No aplica", 5: "jperez@eafit.edu.co"},
+        )
+        en1 = EstudianteNotas(
+            row_number=2,
+            first_name=tv("Juan"),
+            last_name=tv("Perez"),
+        )
+        m1 = StudentMatch(estudiante_sist=es1, estudiante_nota=en1, match_key="doc", match_value="1001")
+
+        es2 = EstudianteSistematizacion(
+            row_number=6,
+            nombres=tv("Maria"),
+            apellidos=tv("Gomez"),
+            clase=tv("5536"),
+            documento=tv("1002"),
+            correo=tv("mgomez@eafit.edu.co"),
+            estado_calculado="Aprobó",
+            raw_row_data={1: "Maria", 2: "Gomez", 3: "Aprobó", 4: "No aplica", 5: "mgomez@eafit.edu.co"},
+        )
+        en2 = EstudianteNotas(
+            row_number=3,
+            first_name=tv("Maria"),
+            last_name=tv("Gomez"),
+        )
+        m2 = StudentMatch(estudiante_sist=es2, estudiante_nota=en2, match_key="doc", match_value="1002")
+
+        cg1 = ClaseGroup(clase_id="5535", matches=[m1])
+        cg2 = ClaseGroup(clase_id="5536", matches=[m2])
+        res = AulaCierreResult(aula=AulaMetadata(), clases=[cg1, cg2])
+
+        meta_dict = {
+            "5535": AulaMetadata(docente_principal=tv("Manuela Restrepo")),
+            "5536": AulaMetadata(docente_principal=tv("Manuela Restrepo")),
+        }
+
+        out_path = generate_cierre_excel(
+            result=res,
+            codigo_curso="ABBUEI205",
+            sist_headers=["Nombres", "Apellidos", "Estado", "Código Cert", "Correo"],
+            start_consecutivo=1,
+            output_dir=tmp_path,
+            metadatos_control=meta_dict,
+        )
+
+        wb = openpyxl.load_workbook(out_path, data_only=True)
+        ws_cert = wb["CERTIFICADOS"]
+
+        # Fila 2 (es1, fin de clase 5535) debe tener Docente COIN en MAYÚSCULAS
+        docente_coin = ws_cert.cell(2, 3).value
+        assert docente_coin == "ABBUEI-205 MANUELA RESTREPO"
+        assert docente_coin.isupper()
+
+        # Fila 2 debe tener borde inferior 'medium' porque es fin de clase 5535
+        assert ws_cert.cell(2, 1).border.bottom.style == "medium"
+
+        # Fila 3 (es2, fin de clase 5536 y última fila) también debe tener borde inferior 'medium'
+        assert ws_cert.cell(3, 1).border.bottom.style == "medium"
+
+        # Verificar hoja SISTEMATIZACION
+        ws_sist = wb["SISTEMATIZACION"]
+        # Fila 2: Nombres en mayúsculas, Estado 'Aprobó' preservado, 'No aplica' preservado, correo en minúsculas
+        assert ws_sist.cell(2, 1).value == "JUAN"
+        assert ws_sist.cell(2, 2).value == "PEREZ"
+        assert ws_sist.cell(2, 3).value == "Aprobó"
+        assert ws_sist.cell(2, 4).value == "No aplica"
+        assert ws_sist.cell(2, 5).value == "jperez@eafit.edu.co"
+
+        wb.close()
