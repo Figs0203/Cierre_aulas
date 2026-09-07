@@ -69,12 +69,18 @@ def compute_sha256(file_path: str | Path) -> FileIntegrityRecord:
     hasher = hashlib.sha256()
     file_size = path.stat().st_size
 
-    with open(path, "rb") as f:
-        while True:
-            block = f.read(_BLOCK_SIZE)
-            if not block:
-                break
-            hasher.update(block)
+    try:
+        with open(path, "rb") as f:
+            while True:
+                block = f.read(_BLOCK_SIZE)
+                if not block:
+                    break
+                hasher.update(block)
+    except PermissionError as e:
+        raise PermissionError(
+            f"Permiso denegado en '{path.name}'. El archivo está actualmente abierto en Microsoft Excel "
+            f"o siendo sincronizado por OneDrive. Por favor ciérrelo en Excel e intente nuevamente."
+        ) from e
 
     return FileIntegrityRecord(
         file_path=str(path.resolve()),

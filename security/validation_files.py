@@ -75,8 +75,17 @@ def validate_no_duplicate_files(file_paths: dict[str, str | Path]) -> list[str]:
                             f"Asegúrese de seleccionar archivos distintos para cada rol."
                         )
                 hashes[role] = record.sha256_hash
-            except (FileNotFoundError, PermissionError, OSError) as e:
-                errors.append(f"🔴 ERROR: No se puede verificar '{role}': {e}")
+            except (PermissionError, OSError) as e:
+                if isinstance(e, PermissionError) or getattr(e, "errno", None) == 13:
+                    errors.append(
+                        f"🔴 ERROR: Permiso denegado al leer '{role}' ({Path(path).name}).\n"
+                        f"      El archivo está actualmente ABIERTO en Microsoft Excel o sincronizándose en OneDrive.\n"
+                        f"      👉 Solución: Cierre el archivo en Microsoft Excel e intente nuevamente."
+                    )
+                else:
+                    errors.append(f"🔴 ERROR: No se puede verificar '{role}': {e}")
+            except FileNotFoundError:
+                errors.append(f"🔴 ERROR: No se encontró el archivo '{role}': {Path(path).name}")
 
     return errors
 
