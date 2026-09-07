@@ -209,10 +209,32 @@ def parse_notas_archivo(
             c_obj = ws.cell(r, c)
             f = c_obj.fill
             if f and f.fill_type and f.fill_type != "none":
-                fg = f.fgColor
-                rgb_str = fg.rgb[2:] if (fg and fg.rgb and len(fg.rgb) == 8) else getattr(fg, "rgb", None)
+                fg = getattr(f, "fgColor", None)
+                if not fg:
+                    continue
+
+                raw_rgb = getattr(fg, "rgb", None)
+                rgb_str = None
+                if raw_rgb is not None:
+                    if isinstance(raw_rgb, str):
+                        clean_raw = raw_rgb.strip().lstrip("#")
+                        rgb_str = clean_raw[2:] if len(clean_raw) == 8 else clean_raw
+                    else:
+                        # Si es un descriptor o instancia RGB de openpyxl
+                        try:
+                            s = str(raw_rgb).strip().lstrip("#")
+                            if len(s) in (6, 8):
+                                rgb_str = s[2:] if len(s) == 8 else s
+                        except Exception:
+                            rgb_str = None
+
                 theme_val = getattr(fg, "theme", None)
+                if not isinstance(theme_val, int):
+                    theme_val = None
+
                 tint_val = getattr(fg, "tint", None)
+                if not isinstance(tint_val, (int, float)):
+                    tint_val = None
 
                 if is_orange_fill_exact(rgb_str, theme_val, tint_val):
                     is_orange = True

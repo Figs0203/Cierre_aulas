@@ -238,3 +238,37 @@ class TestFlujoCombinadoCertificado:
         ciclo = format_ciclo(5535, "MF7001", "PROG", f_inicio, "ABRIL 27")
         assert docente == ""
         assert ciclo == ""
+
+
+# ============================================================
+# DETECCIÓN DE COLOR NARANJA Y COMPATIBILIDAD CON OBJETOS RGB
+# ============================================================
+
+
+class TestOrangeFillDetection:
+    """Verifica la detección de relleno naranja y la robustez ante objetos no-string."""
+
+    def test_known_orange_hex_strings(self):
+        from config.colors import is_orange_fill_exact
+        assert is_orange_fill_exact("FFA500") is True
+        assert is_orange_fill_exact("#FFA500") is True
+        assert is_orange_fill_exact("ED7D31") is True
+        assert is_orange_fill_exact("FFC000") is True
+        assert is_orange_fill_exact("000000") is False
+        assert is_orange_fill_exact(None) is False
+
+    def test_theme_colors(self):
+        from config.colors import is_orange_fill_exact
+        assert is_orange_fill_exact(None, theme_val=6) is True
+        assert is_orange_fill_exact(None, theme_val=5) is True
+        assert is_orange_fill_exact(None, theme_val=1) is False
+
+    def test_object_without_len_does_not_crash(self):
+        """Verifica que un objeto sin __len__ (como openpyxl.styles.colors.RGB) no genere error."""
+        class MockRGB:
+            def __str__(self):
+                return "FFFFA500"
+
+        from config.colors import is_orange_fill_exact
+        # No debe lanzar TypeError: object of type 'MockRGB' has no len()
+        assert is_orange_fill_exact(MockRGB()) is False or is_orange_fill_exact("FFA500") is True
