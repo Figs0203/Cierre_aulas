@@ -23,13 +23,20 @@ wheels/
 .installed.cfg
 *.egg
 
-# Archivos de reportes locales generados (pueden contener rutas o datos locales)
+# Archivos de reportes locales y salidas de usuario (privacidad garantizada)
 reports/
+output/*.xlsx
+output/*.csv
+input/*.xlsx
+discovery_*.txt
 *.log
+*.xlsx
+!tests/fixtures/*.xlsx
 
 # Entornos y temporales de IDE / OS
 .idea/
 .vscode/
+.pytest_cache/
 *.swp
 *.swo
 .DS_Store

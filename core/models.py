@@ -111,6 +111,7 @@ class EstudianteSistematizacion:
     clase: TracedValue | None = None
     catalogo: TracedValue | None = None
     programa: TracedValue | None = None
+    tipo_grupo: TracedValue | None = None  # "Pregrado" o "Posgrado" (determina umbral 3.0 vs 3.5)
     formador_lider: TracedValue | None = None
     formador_acompanante: TracedValue | None = None
 
@@ -121,6 +122,20 @@ class EstudianteSistematizacion:
     # Estado de certificación (puede contener fórmula)
     estado_certificacion_raw: TracedValue | None = None
     formula_estado_certificacion: str | None = None  # Fórmula Excel si existe
+
+    # Valores calculados por el motor de reglas
+    estado_calculado: str | None = None  # "Aprobó", "No aprobó", "Abandonó"
+    elaboro_certificado_calculado: str | None = None  # "SI" / "NO"
+    codigo_certificado_calculado: str | None = None  # Código del curso o "No aplica"
+    envio_certificado_calculado: str | None = None  # "SI" / "NO"
+    fecha_envio_calculada: str | None = None
+
+    # Datos brutos de toda la fila para reconstrucción exacta de 55 columnas
+    raw_row_data: dict[int, Any] = field(default_factory=dict)
+
+    # Detección de visibilidad y mapeo de columnas dinámicas
+    is_hidden_row: bool = False
+    column_indices: dict[str, int] = field(default_factory=dict)
 
     # Campos adicionales extraídos
     extra_fields: dict[str, TracedValue] = field(default_factory=dict)
@@ -135,9 +150,10 @@ class EstudianteNotas:
     """Registro de un estudiante tal como aparece en el archivo de Notas.
 
     Incluye información sobre el color de relleno para detección de
-    estudiantes excluidos (naranja).
+    estudiantes excluidos (naranja) y si la fila estaba oculta/filtrada.
     """
     row_number: int  # Fila en el archivo original (1-based)
+    is_hidden_row: bool = False
 
     # Identificadores
     org_defined_id: TracedValue | None = None

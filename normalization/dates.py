@@ -160,56 +160,46 @@ def format_date_sistematizacion(d: date | None) -> str:
     return d.strftime("%d/%m/%Y")
 
 
-def format_date_certificados(d: date | None) -> str:
+def format_date_certificados(d: Any) -> str:
     """Formatea una fecha para el archivo de Certificados: DD-mes-AAAA.
 
     Ejemplo: date(2025, 6, 16) → "16-jun-2025"
-
-    Args:
-        d: Fecha a formatear.
-
-    Returns:
-        String en formato "DD-mes-AAAA" o "" si la fecha es None.
     """
     if d is None:
+        return ""
+    if isinstance(d, str):
+        d = parse_date(d)
+        if d is None:
+            return ""
+    if isinstance(d, datetime):
+        d = d.date()
+    if not isinstance(d, date):
         return ""
 
     month_name = _MESES_ES.get(d.month, "???")
     return f"{d.day}-{month_name}-{d.year}"
 
 
-def extract_year(d: date | None) -> int | None:
-    """Extrae el año de una fecha.
-
-    Args:
-        d: Fecha.
-
-    Returns:
-        Año como entero o None.
-    """
-    return d.year if d else None
-
-
-def extract_semester(d: date | None) -> int | None:
-    """Determina el semestre (1 o 2) a partir de una fecha.
-
-    Convención:
-    - Meses 1-6: Semestre 1.
-    - Meses 7-12: Semestre 2.
-
-    NOTA: Esta es una regla determinística simple. Si la institución
-    utiliza una definición diferente de semestre, debe confirmarse
-    en la Fase 0 y ajustarse.
-
-    Args:
-        d: Fecha.
-
-    Returns:
-        1 o 2, o None si la fecha es None.
-    """
+def extract_year(d: Any) -> int | None:
+    """Extrae el año de una fecha o cadena de fecha."""
     if d is None:
         return None
-    return 1 if d.month <= 6 else 2
+    if isinstance(d, str):
+        d = parse_date(d)
+    if isinstance(d, (date, datetime)):
+        return d.year
+    return None
+
+
+def extract_semester(d: Any) -> int | None:
+    """Determina el semestre (1 o 2) a partir de una fecha o cadena de fecha."""
+    if d is None:
+        return None
+    if isinstance(d, str):
+        d = parse_date(d)
+    if isinstance(d, (date, datetime)):
+        return 1 if d.month <= 6 else 2
+    return None
 
 
 # ============================================================
@@ -217,7 +207,6 @@ def extract_semester(d: date | None) -> int | None:
 # ============================================================
 
 # Meses en español en MAYÚSCULAS para la columna Ciclo
-# Formato confirmado: "CLASE 5535 MF7001 - M. ESTUDIOS JURÍDICOS - MARZO 16 A ABRIL 27"
 _MESES_ES_MAYUSCULAS = {
     1: "ENERO", 2: "FEBRERO", 3: "MARZO", 4: "ABRIL",
     5: "MAYO", 6: "JUNIO", 7: "JULIO", 8: "AGOSTO",
@@ -225,27 +214,29 @@ _MESES_ES_MAYUSCULAS = {
 }
 
 
-def format_ciclo_date(d: date | datetime | None) -> str:
+def format_ciclo_date(d: Any) -> str:
     """Formatea una fecha al estilo de la columna Ciclo: 'MES DÍA'.
 
     Formato confirmado por el monitor (2026-09-04):
         2026-03-16 → 'MARZO 16'
         2026-04-27 → 'ABRIL 27'
-
-    El año NO se incluye en el campo Ciclo.
-    El mes se escribe en español y en MAYÚSCULAS.
-
-    Args:
-        d: Objeto date, datetime o None.
-
-    Returns:
-        Cadena con formato 'MES DÍA' o '' si la fecha es None.
     """
     if d is None:
         return ""
+    if isinstance(d, str):
+        d = parse_date(d)
+        if d is None:
+            return ""
     if isinstance(d, datetime):
         d = d.date()
+    if not isinstance(d, date):
+        return ""
     mes = _MESES_ES_MAYUSCULAS.get(d.month, "")
     if not mes:
         return ""
     return f"{mes} {d.day}"
+
+
+# Alias de compatibilidad
+format_certificate_date = format_date_certificados
+get_semester = extract_semester

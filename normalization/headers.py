@@ -214,3 +214,23 @@ def analyze_headers(
         result.unmapped.append((original, col_idx))
 
     return result
+
+
+def find_module_columns(headers: list[str | None]) -> dict[int, int]:
+    """Retorna un diccionario {num_modulo: col_idx} mapeando módulos a su columna (1-based)."""
+    analysis = analyze_headers(headers)
+    mod_map = {}
+    for m in analysis.modules_detected:
+        try:
+            num = int(m.canonical.split("_")[1])
+            mod_map[num] = m.col_idx
+        except (ValueError, IndexError):
+            pass
+    return mod_map
+
+
+def find_final_grade_column(headers: list[str | None]) -> int | None:
+    """Retorna el índice de columna (1-based) de la nota final o None."""
+    analysis = analyze_headers(headers)
+    mapping = analysis.get_canonical("nota_final")
+    return mapping.col_idx if mapping else None

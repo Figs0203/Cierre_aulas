@@ -110,3 +110,36 @@ def parse_hex_color(hex_color: str | None) -> tuple[int, int, int] | None:
         return (r, g, b)
     except ValueError:
         return None
+
+
+# Color de relleno naranja oficial / estándar
+FILL_EXCLUDED_ORANGE = "FFA500"
+
+
+def is_orange_fill_exact(
+    rgb_str: str | None,
+    theme_val: int | None = None,
+    tint_val: float | None = None,
+) -> bool:
+    """Detecta si un color de relleno corresponde a la categoría 'naranja' (estudiante excluido).
+
+    Evalúa:
+    1. Coincidencias hexadecimales exactas de naranja/coral común en Excel.
+    2. Rango RGB continuo para variaciones de naranja/ámbar.
+    3. Tema Office Accent 2 (naranja por defecto, theme=6 o theme=5).
+    """
+    if rgb_str:
+        clean = str(rgb_str).strip().lstrip("#").upper()
+        if len(clean) == 8:
+            clean = clean[2:]
+        known_oranges = {"FFA500", "FF8C00", "FF7F50", "ED7D31", "F8CBAD", "F4B084", "C65911", "FFC000"}
+        if clean in known_oranges:
+            return True
+        rgb = parse_hex_color(clean)
+        if rgb and ORANGE_RANGE.contains(*rgb):
+            return True
+
+    if theme_val in (5, 6):
+        return True
+
+    return False

@@ -22,6 +22,7 @@ if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
 from input.file_selector import select_all_four_files
+from processing.cierre_orchestrator import run_cierre_pipeline
 from security.integrity import compute_sha256, verify_integrity
 from security.offline_check import check_offline_compliance
 from tests.discovery.inspect_real_files import run_discovery
@@ -42,8 +43,8 @@ def print_banner():
 def show_menu() -> str:
     print("\nMENU PRINCIPAL:")
     print("  [1] Modo 1 — Descubrimiento Técnico Local (Fase 0) [HABILITADO]")
-    print("  [2] Modo 2 — Simulación Previa [BLOQUEADO: Requiere validación de reglas]")
-    print("  [3] Modo 3 — Generar Archivo Auxiliar de Cierre [BLOQUEADO: Requiere validación de reglas]")
+    print("  [2] Modo 2 — Simulación Previa (Validación en Memoria) [HABILITADO]")
+    print("  [3] Modo 3 — Generar Archivo Auxiliar de Cierre [HABILITADO]")
     print("  [4] Verificación de Arquitectura Offline")
     print("  [0] Salir")
     print("-" * 76)
@@ -62,10 +63,8 @@ def handle_discovery_mode():
     print("(hojas, encabezados, fórmulas, colores de relleno y formato condicional)")
     print("y generará un informe técnico local en la carpeta 'reports/'.\n")
 
-    # 1. Selección de los 4 archivos
     files = select_all_four_files(use_gui=True)
 
-    # 2. Aula opcional a buscar
     print("\n🔍 Código del Aula a inspeccionar específicamente (opcional, ej. ABBUEI154):")
     try:
         aula_input = input("   Ingrese código de aula o presione ENTER para omitir: ").strip()
@@ -73,18 +72,14 @@ def handle_discovery_mode():
     except (EOFError, KeyboardInterrupt):
         target_aula = None
 
-    # 3. Guardar hashes antes de la ejecución
     hashes_before = {}
     for role, path in files.items():
         rec = compute_sha256(path)
         hashes_before[role] = rec
 
     print("\n⏳ Ejecutando análisis técnico profundo de los archivos en memoria...")
-
-    # 4. Ejecución del descubrimiento
     report_path, _ = run_discovery(files, target_aula=target_aula)
 
-    # 5. Verificación de integridad post-ejecución
     print("\n🔒 Verificando que ningún archivo haya sido modificado...")
     intact, integrity_msgs = verify_integrity(hashes_before, files)
 
@@ -101,8 +96,93 @@ def handle_discovery_mode():
 
     print(f"\n📄 El Informe de Descubrimiento completo ha sido guardado en:")
     print(f"   👉 {report_path.resolve()}")
-    print("\nPuede abrir ese archivo de texto para revisar la estructura de sus archivos.")
     print("=" * 76)
+
+
+def handle_cierre_execution(is_simulation: bool = False):
+    modo_nombre = "MODO 2: SIMULACIÓN PREVIA" if is_simulation else "MODO 3: GENERACIÓN DE ARCHIVO AUXILIAR DE CIERRE"
+    print("\n" + "=" * 76)
+    print(f"INICIANDO {modo_nombre}")
+    print("=" * 76)
+
+    files = select_all_four_files(use_gui=True)
+
+    print("\n🔍 Ingrese el código del aula virtual a cerrar (ej. ABBUEI205):")
+    while True:
+        try:
+            target_aula = input("   Código de aula: ").strip()
+            if target_aula:
+                break
+            print("   ⚠️ Debe ingresar un código de aula válido.")
+        except (EOFError, KeyboardInterrupt):
+            return
+
+    print(f"\n🏷️ Ingrese el código del curso para los certificados (presione ENTER para usar '{target_aula}'):")
+    try:
+        cod_input = input(f"   Código de curso [{target_aula}]: ").strip()
+        codigo_curso = cod_input if cod_input else target_aula
+    except (EOFError, KeyboardInterrupt):
+        codigo_curso = target_aula
+
+    print("\n⏳ Procesando información en memoria con reglas oficiales...")
+    try:
+        res, out_file, intact, integrity_msgs = run_cierre_pipeline(
+            file_paths=files,
+            target_aula=target_aula,
+            codigo_curso=codigo_curso,
+            is_simulation=is_simulation,
+        )
+    except Exception as e:
+        print(f"\n❌ Error durante el procesamiento: {e}")
+        return
+
+    print("\n" + "=" * 76)
+    print("RESUMEN OPERATIVO DEL PROCESAMIENTO")
+    print("=" * 76)
+    print(f"• Aula Virtual: {target_aula}")
+    print(f"• Código para Certificados: {codigo_curso}")
+    print(f"• Clases detectadas: {len(res.clases)}")
+    print(f"• Total Estudiantes en Sistematización: {res.total_estudiantes}")
+    print(f"• Total Matches exitosos con Notas: {res.total_matched}")
+    print(f"• Total Excluidos (Relleno Naranja en Notas): {res.total_excluded}")
+    print(f"• Estudiantes en Sistematización sin Notas: {res.total_unmatched_sist}")
+    print(f"• Registros en Notas sin match en Sistematización: {res.total_unmatched_notas}")
+
+    print("\n--- Desglose por Clase ---")
+    for cg in res.clases:
+        aprobados = sum(1 for m in cg.matches if m.estudiante_sist.estado_calculado == "Aprobó")
+        no_aprobados = sum(1 for m in cg.matches if m.estudiante_sist.estado_calculado == "No aprobó")
+        abandonaron = sum(1 for m in cg.matches if m.estudiante_sist.estado_calculado == "Abandonó")
+        print(f"  [Clase {cg.clase_id}]")
+        print(f"    - En Sistematización: {len(cg.estudiantes_sist)} | Con Notas: {len(cg.matches)}")
+        print(f"    - Aprobados: {aprobados} | No Aprobados: {no_aprobados} | Abandonaron: {abandonaron}")
+        if cg.excluded_orange:
+            print(f"    - ⚠️ Excluidos (Naranja): {len(cg.excluded_orange)}")
+
+    print("\n🔒 Verificación de Integridad de los Archivos Oficiales:")
+    for m in integrity_msgs:
+        print(f"  {m}")
+
+    if intact:
+        print("\n✅ INTEGRIDAD 100% CERTIFICADA: Los 4 archivos oficiales permanecieron intactos.")
+    else:
+        print("\n🔴 ADVERTENCIA: Se detectó una inconsistencia de hash.")
+
+    if not is_simulation and out_file:
+        print("\n" + "=" * 76)
+        print("🎉 ¡ARCHIVO AUXILIAR DE CIERRE GENERADO EXITOSAMENTE!")
+        print("=" * 76)
+        print(f"👉 Archivo: {out_file.resolve()}")
+        print("\nContiene las 5 hojas estandarizadas:")
+        print("  1. RESUMEN: Estadísticas y ficha técnica.")
+        print("  2. SISTEMATIZACION: Tabla idéntica a la hoja oficial (55 cols) para Copiar y Pegar.")
+        print("  3. CERTIFICADOS: Tabla idéntica a la hoja oficial (13 cols) solo con aprobados.")
+        print("  4. ACTUALIZACION_CONTROL: Fila y columna para marcar el aula como cerrada.")
+        print("  5. VALIDACIONES_Y_TRAZABILIDAD: Auditoría celda a celda de procedencia.")
+        print("=" * 76)
+    else:
+        print("\n💡 MODO SIMULACIÓN COMPLETADO: No se generó ningún archivo en disco.")
+        print("=" * 76)
 
 
 def handle_offline_check():
@@ -124,10 +204,10 @@ def main():
 
         if choice == "1":
             handle_discovery_mode()
-        elif choice in ("2", "3"):
-            print("\n🔒 Esta funcionalidad está bloqueada temporalmente.")
-            print("   Razón: Las reglas de negocio definitivas (fórmulas exactas, formatos de color,")
-            print("   relación Sección/Clase) deben ser confirmadas a partir del informe de Fase 0.")
+        elif choice == "2":
+            handle_cierre_execution(is_simulation=True)
+        elif choice == "3":
+            handle_cierre_execution(is_simulation=False)
         elif choice == "4":
             handle_offline_check()
         elif choice in ("0", "q", "salir", "exit"):
