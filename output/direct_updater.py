@@ -21,6 +21,11 @@ máxima responsabilidad y mecanismos de seguridad de nivel institucional:
 
 4. Archivo de Notas:
    Se mantiene estrictamente como SOLO LECTURA (no se modifica).
+
+5. Compatibilidad con Tablas Dinámicas (PivotTables):
+   openpyxl no soporta tablas dinámicas. Al guardar un archivo que las contenía,
+   se eliminan para evitar el mensaje de "reparación" de Excel. El archivo original
+   siempre tiene su backup íntegro previo, por lo que no hay pérdida de datos.
 """
 
 from __future__ import annotations
@@ -81,6 +86,27 @@ class DirectUpdateReport:
         return len(self.errors) == 0
 
 
+def _strip_pivot_tables(wb: openpyxl.Workbook) -> int:
+    """Elimina todas las tablas dinámicas (PivotTables) de un workbook en memoria.
+
+    openpyxl no soporta PivotTables y produce XML inválido al guardar archivos que
+    las contienen, lo que provoca el mensaje de "reparación" de Excel.
+    El archivo original siempre tiene su backup previo, así que no hay pérdida.
+
+    Args:
+        wb: El workbook a sanear (se modifica en lugar).
+
+    Returns:
+        Número de tablas dinámicas eliminadas.
+    """
+    count = 0
+    for ws in wb.worksheets:
+        if hasattr(ws, '_pivots') and ws._pivots:
+            count += len(ws._pivots)
+            ws._pivots.clear()
+    return count
+
+
 def create_timestamped_backup(file_path: Path | str, backup_dir: Optional[Path | str] = None) -> Path:
     """Crea una copia de seguridad idéntica del archivo con marca de tiempo.
 
@@ -104,6 +130,84 @@ def create_timestamped_backup(file_path: Path | str, backup_dir: Optional[Path |
 
     shutil.copy2(path, backup_path)
     return backup_path
+
+
+def find_latest_backup(original_path: Path | str, backup_dir: Optional[Path | str] = None) -> Optional[Path]:
+    """Busca el backup más reciente de un archivo oficial.
+
+    Args:
+        original_path: Ruta al archivo oficial original.
+        backup_dir: Carpeta de backups (si es None, usa '_backups_cierre' junto al archivo).
+
+    Returns:
+        Ruta al backup más reciente, o None si no hay ninguno.
+    """
+    path = Path(original_path).resolve()
+    target_dir = Path(backup_dir).resolve() if backup_dir else path.parent / "_backups_cierre"
+
+    if not target_dir.exists():
+        return None
+
+    # Buscar archivos que coincidan con el patrón: <stem>_backup_<timestamp><suffix>
+    pattern = f"{path.stem}_backup_*{path.suffix}"
+    candidates = sorted(target_dir.glob(pattern), reverse=True)  # Más reciente primero (orden lexicográfico del timestamp)
+    return candidates[0] if candidates else None
+
+
+def restore_last_backup(
+    file_paths: Dict[str, Path | str],
+    backup_dir: Optional[Path | str] = None,
+) -> Dict[str, Any]:
+    """Restaura el último backup disponible para cada archivo oficial.
+
+    Solo restaura los archivos que tienen un backup disponible (Sistematización,
+    Certificados y Control de Aulas). El archivo de Notas nunca se modifica, así
+    que no tiene backup y se omite.
+
+    Args:
+        file_paths: Diccionario con rutas {'control_aulas', 'sistematizacion', 'certificados', ...}.
+        backup_dir: Carpeta donde buscar los backups (por defecto '_backups_cierre').
+
+    Returns:
+        Diccionario con los resultados por archivo:
+            {'role': {'status': 'ok'|'sin_backup'|'error', 'backup': Path|None, 'mensaje': str}}
+    """
+    resultados: Dict[str, Any] = {}
+    roles_a_restaurar = ["sistematizacion", "certificados", "control_aulas"]
+
+    for role in roles_a_restaurar:
+        if role not in file_paths:
+            resultados[role] = {"status": "omitido", "backup": None, "mensaje": "Archivo no especificado."}
+            continue
+
+        original = Path(file_paths[role]).resolve()
+        # Inferir carpeta de backup desde el archivo original si no se especificó
+        inferred_backup_dir = backup_dir if backup_dir else original.parent / "_backups_cierre"
+        latest = find_latest_backup(original, backup_dir=inferred_backup_dir)
+
+        if latest is None:
+            resultados[role] = {
+                "status": "sin_backup",
+                "backup": None,
+                "mensaje": f"No se encontró ningún backup para '{original.name}' en '{inferred_backup_dir}'.",
+            }
+            continue
+
+        try:
+            shutil.copy2(latest, original)
+            resultados[role] = {
+                "status": "ok",
+                "backup": latest,
+                "mensaje": f"'{original.name}' restaurado exitosamente desde '{latest.name}'.",
+            }
+        except Exception as exc:
+            resultados[role] = {
+                "status": "error",
+                "backup": latest,
+                "mensaje": f"Error al restaurar '{original.name}': {exc}",
+            }
+
+    return resultados
 
 
 def apply_direct_cierre(
@@ -149,6 +253,9 @@ def apply_direct_cierre(
     # ---------------------------------------------------------
     try:
         wb_sist = openpyxl.load_workbook(path_sist, data_only=False)
+        # Eliminar tablas dinámicas para evitar el mensaje de reparación de Excel.
+        # El backup previo ya garantiza integridad del original.
+        _strip_pivot_tables(wb_sist)
         ws_sist = wb_sist["Formato"] if "Formato" in wb_sist.sheetnames else wb_sist.active
 
         # Recopilar todos los estudiantes ordenados por fila original
@@ -260,6 +367,8 @@ def apply_direct_cierre(
     # ---------------------------------------------------------
     try:
         wb_cert = openpyxl.load_workbook(path_cert, data_only=False)
+        # Eliminar tablas dinámicas para evitar el mensaje de reparación de Excel.
+        _strip_pivot_tables(wb_cert)
         if "Códigos" in wb_cert.sheetnames:
             ws_cert = wb_cert["Códigos"]
         elif "Certificados" in wb_cert.sheetnames:
@@ -378,6 +487,8 @@ def apply_direct_cierre(
     # ---------------------------------------------------------
     try:
         wb_ctrl = openpyxl.load_workbook(path_ctrl, data_only=False)
+        # Eliminar tablas dinámicas para evitar el mensaje de reparación de Excel.
+        _strip_pivot_tables(wb_ctrl)
         fecha_cierre_hoy = datetime.now().strftime("%d/%m/%Y")
 
         sheets_to_check = [

@@ -36,6 +36,46 @@ from normalization.headers import find_final_grade_column, find_module_columns
 from normalization.text import normalize_document, normalize_whitespace
 
 
+def _parse_nota(raw: Any) -> Optional[float]:
+    """Convierte un valor crudo de celda de notas a float.
+
+    El archivo oficial de Interactiva puede usar tanto punto como coma como
+    separador decimal (ej. '3,5' o '3.5' o 3.5). Esta función normaliza
+    ambas representaciones para el procesamiento interno. Los archivos de
+    salida (auxiliar, sistematización) usarán coma como separador decimal
+    si los valores se formatean como texto, o el tipo float nativo de Excel
+    si se escriben como número.
+
+    Args:
+        raw: Valor de celda (str, int, float o None).
+
+    Returns:
+        float si se pudo convertir, None si el valor es vacío o inválido.
+    """
+    if raw is None:
+        return None
+    if isinstance(raw, (int, float)):
+        return float(raw)
+    s = str(raw).strip()
+    if not s:
+        return None
+    # Soportar ambos separadores decimales: punto y coma
+    # Primero reemplazar coma decimal por punto (para convertir a float)
+    # Caso: '3,5' -> '3.5'; '3.5' -> '3.5'
+    # Cuidado: si hay separador de miles con punto (ej. '1.234,56') se normaliza correctamente
+    if ',' in s and '.' in s:
+        # Formato con miles: '1.234,56' → quitar puntos de miles, sustituir coma decimal
+        s = s.replace('.', '').replace(',', '.')
+    elif ',' in s:
+        # Solo coma: '3,5' → '3.5'
+        s = s.replace(',', '.')
+    # Si solo tiene punto ya está en formato correcto
+    try:
+        return float(s)
+    except ValueError:
+        return None
+
+
 def parse_seccion_info(seccion_str: str | None) -> Tuple[str | None, str | None]:
     """Extrae (Catálogo, Clase) a partir del texto de la columna Sección.
 
@@ -177,13 +217,9 @@ def parse_notas_archivo(
         califs: Dict[str, TracedValue] = {}
         for m_num, c_idx in mod_cols.items():
             cell_val = ws.cell(r, c_idx).value
-            # Normalizar float/int
-            nota_num = None
-            if cell_val is not None:
-                try:
-                    nota_num = float(str(cell_val).replace(",", "."))
-                except ValueError:
-                    nota_num = cell_val
+            nota_num = _parse_nota(cell_val)
+            if nota_num is None and cell_val is not None:
+                nota_num = cell_val  # Preservar valor original si no es parseable como número
             califs[f"modulo_{m_num}"] = make_traced(
                 nota_num, raw_headers[c_idx - 1] or f"Módulo {m_num}", c_idx
             )
@@ -192,13 +228,15 @@ def parse_notas_archivo(
         nota_final_traced = None
         if final_col:
             final_v = ws.cell(r, final_col).value
-            if final_v is not None:
-                try:
-                    fn_num = float(str(final_v).replace(",", "."))
-                except ValueError:
-                    fn_num = final_v
+            fn_num = _parse_nota(final_v)
+            if fn_num is not None:
                 nota_final_traced = make_traced(
                     fn_num, raw_headers[final_col - 1] or "Calculated Final", final_col
+                )
+            elif final_v is not None:
+                # Valor no parseable como número: preservar tal cual con trazabilidad
+                nota_final_traced = make_traced(
+                    final_v, raw_headers[final_col - 1] or "Calculated Final", final_col
                 )
 
         # Detección de color de relleno (naranja / excluido)

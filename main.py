@@ -26,7 +26,7 @@ if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
 from input.file_selector import select_all_four_files
-from output.direct_updater import apply_direct_cierre
+from output.direct_updater import apply_direct_cierre, restore_last_backup
 from processing.cierre_orchestrator import run_cierre_pipeline
 from security.integrity import compute_sha256, verify_integrity
 from security.offline_check import check_offline_compliance
@@ -52,10 +52,11 @@ def show_menu() -> str:
     print("  [3] Modo 3 — Generar Archivo Auxiliar de Cierre [HABILITADO]")
     print("  [4] Verificación de Arquitectura Offline")
     print("  [5] Modo 5 — Aplicar Cierre Directo en Archivos Oficiales (Con Backup y Protección)")
+    print("  [6] Modo 6 — Restaurar Último Backup en Archivos Oficiales")
     print("  [0] Salir")
     print("-" * 76)
     try:
-        choice = input("Seleccione una opción (0-5): ").strip()
+        choice = input("Seleccione una opción (0-6): ").strip()
         return choice
     except (EOFError, KeyboardInterrupt):
         return "0"
@@ -340,6 +341,76 @@ def handle_direct_cierre_mode():
         for err in report.errors:
             print(f"   • {err}")
     print("=" * 76)
+def handle_restore_backup_mode():
+    print("\n" + "=" * 76)
+    print("INICIANDO MODO 6: RESTAURAR ÚLTIMO BACKUP EN ARCHIVOS OFICIALES")
+    print("=" * 76)
+    print("Este modo restaura el último backup automático de cada archivo oficial.")
+    print("Archivos afectados:")
+    print("  • Sistematización de Cursos COIN")
+    print("  • Control de Códigos de Certificados")
+    print("  • Control de Aulas de Formadores")
+    print("  • Notas: NO se restaura (nunca fue modificado).")
+    print("\n⚠️  Los backups se buscan en la subcarpeta '_backups_cierre/' junto a cada archivo.")
+    print("!" * 76)
+    print("🛡️ ADVERTENCIA IMPORTANTE:")
+    print("  Esta acción reemplazará el contenido actual de los archivos oficiales")
+    print("  con la versión de su último backup. Cualquier cambio posterior al backup")
+    print("  se perderá permanentemente.")
+    print("!" * 76)
+
+    files = select_all_four_files(use_gui=True)
+
+    try:
+        confirm = input("\n¿Está seguro de restaurar los archivos oficiales desde el último backup? (Escriba 'SI' para confirmar): ").strip()
+        if confirm != "SI":
+            print("\n❌ Operación cancelada por el usuario. Ningún archivo fue modificado.")
+            return
+    except (EOFError, KeyboardInterrupt):
+        print("\n❌ Operación cancelada.")
+        return
+
+    print("\n⏳ Buscando backups y restaurando archivos...")
+    try:
+        resultados = restore_last_backup(file_paths=files)
+    except Exception as e:
+        print(f"\n❌ Error durante la restauración: {e}")
+        return
+
+    print("\n" + "=" * 76)
+    print("RESULTADO DE LA RESTAURACIÓN")
+    print("=" * 76)
+
+    all_ok = True
+    labels = {
+        "sistematizacion": "Sistematización de Cursos COIN",
+        "certificados": "Control de Códigos de Certificados",
+        "control_aulas": "Control de Aulas de Formadores",
+    }
+    for role, info in resultados.items():
+        label = labels.get(role, role)
+        status = info.get("status", "error")
+        mensaje = info.get("mensaje", "")
+        backup = info.get("backup")
+        if status == "ok":
+            icon = "✅"
+        elif status == "sin_backup":
+            icon = "⚠️"
+            all_ok = False
+        else:
+            icon = "🔴"
+            all_ok = False
+        print(f"  {icon} [{label}]: {mensaje}")
+        if backup and status == "ok":
+            print(f"       ↩ Restaurado desde: {backup.name}")
+
+    if all_ok:
+        print("\n✅ Restauración completada. Los archivos oficiales han vuelto al estado del último backup.")
+    else:
+        print("\n⚠️ Restauración completada con advertencias. Revise los mensajes anteriores.")
+    print("=" * 76)
+
+
 
 
 def main():
@@ -358,11 +429,13 @@ def main():
             handle_offline_check()
         elif choice == "5":
             handle_direct_cierre_mode()
+        elif choice == "6":
+            handle_restore_backup_mode()
         elif choice in ("0", "q", "salir", "exit"):
             print("\nSaliendo del asistente. ¡Hasta pronto!")
             sys.exit(0)
         else:
-            print("\n⚠️ Opción no válida. Por favor seleccione 0, 1, 2, 3, 4 o 5.")
+            print("\n⚠️ Opción no válida. Por favor seleccione 0, 1, 2, 3, 4, 5 o 6.")
 
 
 if __name__ == "__main__":
