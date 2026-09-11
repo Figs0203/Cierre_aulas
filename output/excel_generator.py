@@ -331,9 +331,14 @@ def generate_cierre_excel(
         for c_idx, val in enumerate(row_cert, start=1):
             cell = ws_cert.cell(cert_r, c_idx, val)
             cell.font = _FONT_CERTIFICADO
-            cell.border = border_cell
-            if c_idx in (1, 10, 11, 12):
-                cell.alignment = Alignment(horizontal="center")
+            # La columna N° (1) es la única que NO lleva borde inferior grueso
+            # en la fila de fin de clase; el resto sí.
+            if is_last_of_class and c_idx == 1:
+                cell.border = _BORDER_THIN
+            else:
+                cell.border = border_cell
+            # Toda la información de la tabla de Certificados va centrada.
+            cell.alignment = Alignment(horizontal="center", vertical="center")
 
         current_n += 1
         cert_r += 1

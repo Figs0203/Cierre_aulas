@@ -111,11 +111,21 @@ oficiales de la biblioteca. Ajustes recientes (formato oficial):
 - Regla de semestre: S1 = 1 nov → 30 abr; S2 = 1 may → 31 oct
   (`extract_semester`).
 - Fuente de la tabla de Certificados: **Zurich Cn BT, tamaño 11**.
+- Certificados: **toda la información centrada** y la columna **N° (col 1) es la
+  única sin borde inferior grueso** en la fila de fin de clase.
+- Saneo al guardar oficiales: además de PivotTables, se eliminan las
+  **referencias externas** (`externalLinks`) con `_strip_external_links` para
+  evitar el aviso de "reparación" de Excel en Sistematización.
+- Fix de claves del mapa de columnas en `apply_direct_cierre`: el parser usa
+  `estado`, `elaboro`, `codigo_cert`, `envio` (antes se buscaban
+  `estado_certificacion`, etc.), por lo que las columnas *Estado para
+  certificación*, *Se elaboró*, *Código del certificado* y *Se envió* quedaban
+  vacías.
 
 > Nota: el color de borde de las tablas escritas se fijó en negro para que sea
 > visible y consistente. Si el documento oficial usa otro color, se cambia en la
 > constante `_BORDER_COLOR` de `output/direct_updater.py` y
 > `output/excel_generator.py`.
 
-Última verificación: 34 tests OK. El grafo de conocimiento se regenera con
+Última verificación: 36 tests OK. El grafo de conocimiento se regenera con
 `graphify update .` tras cada cambio de código.

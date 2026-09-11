@@ -28,7 +28,11 @@ from core.models import (
     StudentMatch,
 )
 from core.traceability import TracedValue
-from output.direct_updater import apply_direct_cierre, create_timestamped_backup
+from output.direct_updater import (
+    apply_direct_cierre,
+    create_timestamped_backup,
+    _strip_external_links,
+)
 
 
 class TestDirectUpdater(unittest.TestCase):
@@ -281,13 +285,21 @@ class TestDirectUpdater(unittest.TestCase):
             self.assertEqual(ws_cert.cell(3, 7).value, "cperez@eafit.edu.co")
             self.assertEqual(ws_cert.cell(3, 8).value, "ABBUEI205")
             self.assertEqual(ws_cert.cell(3, 12).value, 1)
-            self.assertEqual(ws_cert.cell(3, 1).border.bottom.style, "medium")  # Borde fin de clase 5535
+            # La columna N° (1) es la ÚNICA sin borde inferior grueso en fin de clase.
+            self.assertEqual(ws_cert.cell(3, 1).border.bottom.style, "thin")
+            self.assertEqual(ws_cert.cell(3, 2).border.bottom.style, "medium")  # Borde fin de clase 5535
 
             # Fila 4 anexada para Ana María (N° = 12 correlativo)
             self.assertEqual(ws_cert.cell(4, 1).value, 12)
             self.assertEqual(ws_cert.cell(4, 4).value, "ANA MARIA")
             self.assertEqual(ws_cert.cell(4, 12).value, 1)
-            self.assertEqual(ws_cert.cell(4, 1).border.bottom.style, "medium")  # Borde fin de clase 5536
+            self.assertEqual(ws_cert.cell(4, 1).border.bottom.style, "thin")
+            self.assertEqual(ws_cert.cell(4, 2).border.bottom.style, "medium")  # Borde fin de clase 5536
+
+            # Toda la información de Certificados va centrada.
+            self.assertEqual(ws_cert.cell(3, 4).alignment.horizontal, "center")
+            self.assertEqual(ws_cert.cell(3, 7).alignment.horizontal, "center")
+            self.assertEqual(ws_cert.cell(4, 5).alignment.horizontal, "center")
 
             # Fuente oficial de la tabla de Certificados: Zurich Cn BT 11
             self.assertEqual(ws_cert.cell(3, 1).font.name, "Zurich Cn BT")
@@ -378,6 +390,40 @@ class TestDirectUpdater(unittest.TestCase):
             wb_sist = openpyxl.load_workbook(files["sistematizacion"], data_only=True)
             self.assertEqual(wb_sist["Formato"].cell(2, 7).value, 4.5)
             wb_sist.close()
+
+    def test_strip_external_links_removes_external_references(self):
+        """Las referencias externas deben eliminarse para que Excel no pida reparar el libro."""
+        import zipfile
+        from openpyxl.workbook.external_link.external import ExternalLink
+        from openpyxl.packaging.relationship import Relationship
+
+        with tempfile.TemporaryDirectory() as tmp_str:
+            tmpdir = Path(tmp_str)
+            src = tmpdir / "con_links.xlsx"
+
+            wb = openpyxl.Workbook()
+            wb.active["A1"] = 1
+            link = ExternalLink()
+            link.file_link = Relationship(type="externalLink", Target="externalLink1.xml")
+            link.file_link.TargetMode = "External"
+            wb._external_links.append(link)
+            wb.save(src)
+
+            # El archivo original SÍ contiene referencias externas
+            with zipfile.ZipFile(src) as z:
+                self.assertTrue(any("external" in n.lower() for n in z.namelist()))
+
+            # Tras sanear y guardar, ya no debe quedar ninguna referencia externa
+            wb2 = openpyxl.load_workbook(src)
+            self.assertEqual(len(wb2._external_links), 1)
+            removed = _strip_external_links(wb2)
+            self.assertEqual(removed, 1)
+            clean = tmpdir / "sin_links.xlsx"
+            wb2.save(clean)
+
+            with zipfile.ZipFile(clean) as z:
+                self.assertFalse(any("external" in n.lower() for n in z.namelist()))
+                self.assertNotIn("externalReference", z.read("xl/workbook.xml").decode("utf-8", "ignore"))
 
 
 if __name__ == "__main__":

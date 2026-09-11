@@ -377,11 +377,18 @@ class TestFormatoFeedbackAjustes:
         assert docente_coin == "ABBUEI-205 MANUELA RESTREPO"
         assert docente_coin.isupper()
 
-        # Fila 2 debe tener borde inferior 'medium' porque es fin de clase 5535
-        assert ws_cert.cell(2, 1).border.bottom.style == "medium"
+        # Fila 2 debe tener borde inferior 'medium' en columnas != N° porque es fin de clase 5535
+        # (la columna N°, 1, es la única sin borde inferior grueso)
+        assert ws_cert.cell(2, 1).border.bottom.style == "thin"
+        assert ws_cert.cell(2, 2).border.bottom.style == "medium"
 
-        # Fila 3 (es2, fin de clase 5536 y última fila) también debe tener borde inferior 'medium'
-        assert ws_cert.cell(3, 1).border.bottom.style == "medium"
+        # Fila 3 (es2, fin de clase 5536 y última fila) también con borde inferior 'medium' salvo N°
+        assert ws_cert.cell(3, 1).border.bottom.style == "thin"
+        assert ws_cert.cell(3, 2).border.bottom.style == "medium"
+
+        # Toda la información de Certificados va centrada
+        assert ws_cert.cell(2, 4).alignment.horizontal == "center"
+        assert ws_cert.cell(2, 7).alignment.horizontal == "center"
 
         # Fuente oficial de Certificados: Zurich Cn BT 11
         assert ws_cert.cell(2, 1).font.name == "Zurich Cn BT"

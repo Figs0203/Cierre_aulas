@@ -121,6 +121,31 @@ def _strip_pivot_tables(wb: openpyxl.Workbook) -> int:
     return count
 
 
+def _strip_external_links(wb: openpyxl.Workbook) -> int:
+    """Elimina las referencias a fórmulas externas (externalLinks) de un workbook.
+
+    openpyxl no preserva correctamente la caché de valores de las referencias
+    externas (`externalLink*.xml`), lo que al guardar produce un XML inconsistente
+    y Excel muestra el aviso de "reparación". Al eliminar las referencias externas,
+    dichos archivos dejan de escribirse y el libro abre limpio.
+
+    Las fórmulas que apuntaban a otros libros pueden quedar sin referencia (Excel
+    las marca como no disponibles), pero se conservan los valores ya calculados en
+    las celdas que sí se escriben. El backup previo garantiza el original íntegro.
+
+    Args:
+        wb: El workbook a sanear (se modifica en el lugar).
+
+    Returns:
+        Número de referencias externas eliminadas.
+    """
+    count = 0
+    if hasattr(wb, "_external_links") and wb._external_links:
+        count = len(wb._external_links)
+        wb._external_links.clear()
+    return count
+
+
 def create_timestamped_backup(file_path: Path | str, backup_dir: Optional[Path | str] = None) -> Path:
     """Crea una copia de seguridad idéntica del archivo con marca de tiempo.
 
@@ -267,9 +292,10 @@ def apply_direct_cierre(
     # ---------------------------------------------------------
     try:
         wb_sist = openpyxl.load_workbook(path_sist, data_only=False)
-        # Eliminar tablas dinámicas para evitar el mensaje de reparación de Excel.
-        # El backup previo ya garantiza integridad del original.
+        # Eliminar tablas dinámicas y referencias externas para evitar el mensaje
+        # de reparación de Excel. El backup previo garantiza integridad del original.
         _strip_pivot_tables(wb_sist)
+        _strip_external_links(wb_sist)
         ws_sist = wb_sist["Formato"] if "Formato" in wb_sist.sheetnames else wb_sist.active
 
         # Recopilar todos los estudiantes ordenados por fila original
@@ -335,11 +361,25 @@ def apply_direct_cierre(
                         report.sistematizacion_names_uppercased += 1
 
             # 2. Celdas de cierre: solo si están estrictamente VACÍAS
+            #    Se aceptan alias de claves porque el parser oficial usa
+            #    ('estado', 'elaboro', 'codigo_cert', 'envio') mientras que otros
+            #    orígenes/datos de prueba usan nombres más explícitos.
             target_values: Dict[int, Any] = {}
-            for col_key in ["modulo_1", "modulo_2", "modulo_3", "modulo_4", "modulo_5",
-                            "promedio", "estado_certificacion", "elaboro_certificado",
-                            "codigo_certificado", "envio_certificado", "fecha_envio"]:
-                c_idx = col_map.get(col_key)
+            col_keys = [
+                ("modulo_1", "modulo_1"),
+                ("modulo_2", "modulo_2"),
+                ("modulo_3", "modulo_3"),
+                ("modulo_4", "modulo_4"),
+                ("modulo_5", "modulo_5"),
+                ("promedio", "promedio"),
+                ("estado", "estado_certificacion"),
+                ("elaboro", "elaboro_certificado"),
+                ("codigo_cert", "codigo_certificado"),
+                ("envio", "envio_certificado"),
+                ("fecha_envio", "fecha_envio"),
+            ]
+            for primary_key, alias_key in col_keys:
+                c_idx = col_map.get(primary_key) or col_map.get(alias_key)
                 if c_idx and c_idx in es.raw_row_data:
                     target_values[c_idx] = es.raw_row_data[c_idx]
 
@@ -383,8 +423,10 @@ def apply_direct_cierre(
     # ---------------------------------------------------------
     try:
         wb_cert = openpyxl.load_workbook(path_cert, data_only=False)
-        # Eliminar tablas dinámicas para evitar el mensaje de reparación de Excel.
+        # Eliminar tablas dinámicas y referencias externas para evitar el mensaje
+        # de reparación de Excel. El backup previo garantiza integridad del original.
         _strip_pivot_tables(wb_cert)
+        _strip_external_links(wb_cert)
         if "Códigos" in wb_cert.sheetnames:
             ws_cert = wb_cert["Códigos"]
         elif "Certificados" in wb_cert.sheetnames:
@@ -486,9 +528,14 @@ def apply_direct_cierre(
             for c_idx, val in enumerate(row_cert, start=1):
                 cell = ws_cert.cell(curr_cert_r, c_idx, val)
                 cell.font = _FONT_CERTIFICADO
-                cell.border = border_cell
-                if c_idx in (1, 10, 11, 12):
-                    cell.alignment = Alignment(horizontal="center")
+                # La columna N° (1) es la única que NO lleva borde inferior grueso
+                # en la fila de fin de clase; el resto sí.
+                if is_last_of_class and c_idx == 1:
+                    cell.border = _BORDER_THIN
+                else:
+                    cell.border = border_cell
+                # Toda la información de la tabla de Certificados va centrada.
+                cell.alignment = Alignment(horizontal="center", vertical="center")
 
             current_n += 1
             curr_cert_r += 1
@@ -504,8 +551,10 @@ def apply_direct_cierre(
     # ---------------------------------------------------------
     try:
         wb_ctrl = openpyxl.load_workbook(path_ctrl, data_only=False)
-        # Eliminar tablas dinámicas para evitar el mensaje de reparación de Excel.
+        # Eliminar tablas dinámicas y referencias externas para evitar el mensaje
+        # de reparación de Excel. El backup previo garantiza integridad del original.
         _strip_pivot_tables(wb_ctrl)
+        _strip_external_links(wb_ctrl)
         fecha_cierre_hoy = datetime.now().strftime("%d/%m/%Y")
 
         sheets_to_check = [

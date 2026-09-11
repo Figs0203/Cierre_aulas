@@ -191,6 +191,46 @@ class TestCierrePipelineIntegration(unittest.TestCase):
             )
             wb_out.close()
 
+    def test_direct_cierre_fills_closing_columns(self):
+        """El cierre directo debe llenar las columnas de cierre (Se elaboró, Código, Se envió, Fecha).
+
+        Regresión: las claves del mapa de columnas ('estado', 'elaboro', 'codigo_cert',
+        'envio') debían coincidir entre el parser, el motor de reglas y el actualizador.
+        """
+        from output.direct_updater import apply_direct_cierre
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            paths = generate_all_fixtures(Path(tmpdir))
+
+            result, _, _, _ = run_cierre_pipeline(
+                file_paths=paths,
+                target_aula="ABBUEI154",
+                codigo_curso="ABBUEI154",
+                is_simulation=True,
+            )
+
+            report = apply_direct_cierre(
+                file_paths=paths,
+                result=result,
+                codigo_curso="ABBUEI154",
+                metadatos_control=result.metadatos_control,
+                start_consecutivo=result.start_consecutivo,
+            )
+            self.assertTrue(report.is_successful, report.errors)
+
+            wb = openpyxl.load_workbook(paths["sistematizacion"])
+            ws = wb["Sistematización"]
+            # Columnas de cierre en el fixture: 20=Se elaboró, 21=Código, 22=Se envió, 23=Fecha
+            for r in range(2, ws.max_row + 1):
+                # La fila del estudiante excluido (naranja) no se procesa
+                if ws.cell(r, 22).value is None and ws.cell(r, 23).value is None:
+                    continue
+                self.assertIn(str(ws.cell(r, 20).value).upper(), ("SI", "NO"))
+                self.assertIsNotNone(ws.cell(r, 21).value)
+                self.assertIn(str(ws.cell(r, 22).value).upper(), ("SI", "NO"))
+                self.assertTrue(str(ws.cell(r, 23).value or "").strip())
+            wb.close()
+
 
 if __name__ == "__main__":
     unittest.main()
