@@ -32,6 +32,7 @@ from output.direct_updater import (
     apply_direct_cierre,
     create_timestamped_backup,
     _strip_external_links,
+    _resolve_external_link_formulas,
 )
 
 
@@ -402,7 +403,10 @@ class TestDirectUpdater(unittest.TestCase):
             src = tmpdir / "con_links.xlsx"
 
             wb = openpyxl.Workbook()
-            wb.active["A1"] = 1
+            ws = wb.active
+            ws["A1"] = 1
+            # Fórmula con referencia a libro externo (patrón [1]Libro!) como en el archivo real
+            ws["B1"] = "=+_xlfn.XLOOKUP(A1,[1]ABBUEI!$G:$G,[1]ABBUEI!$E:$E)"
             link = ExternalLink()
             link.file_link = Relationship(type="externalLink", Target="externalLink1.xml")
             link.file_link.TargetMode = "External"
@@ -416,6 +420,10 @@ class TestDirectUpdater(unittest.TestCase):
             # Tras sanear y guardar, ya no debe quedar ninguna referencia externa
             wb2 = openpyxl.load_workbook(src)
             self.assertEqual(len(wb2._external_links), 1)
+            replaced = _resolve_external_link_formulas(wb2, src)
+            self.assertEqual(replaced, 1)
+            # La fórmula con referencia externa debe haberse sustituido por su valor en caché
+            self.assertNotIsInstance(wb2.active["B1"].value, str)
             removed = _strip_external_links(wb2)
             self.assertEqual(removed, 1)
             clean = tmpdir / "sin_links.xlsx"
@@ -424,6 +432,12 @@ class TestDirectUpdater(unittest.TestCase):
             with zipfile.ZipFile(clean) as z:
                 self.assertFalse(any("external" in n.lower() for n in z.namelist()))
                 self.assertNotIn("externalReference", z.read("xl/workbook.xml").decode("utf-8", "ignore"))
+                # Ninguna fórmula del libro debe contener referencias externas tipo [1]
+                import re as _re
+                for name in z.namelist():
+                    if name.startswith("xl/worksheets/") and name.endswith(".xml"):
+                        content = z.read(name).decode("utf-8", "ignore")
+                        self.assertIsNone(_re.search(r"\[\d+\]", content), f"Referencia externa en {name}")
 
 
 if __name__ == "__main__":

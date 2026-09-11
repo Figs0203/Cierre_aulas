@@ -31,6 +31,7 @@ máxima responsabilidad y mecanismos de seguridad de nivel institucional:
 from __future__ import annotations
 
 import os
+import re
 import shutil
 from dataclasses import dataclass, field
 from datetime import date, datetime
@@ -121,6 +122,10 @@ def _strip_pivot_tables(wb: openpyxl.Workbook) -> int:
     return count
 
 
+# Detecta referencias a libros externos en fórmulas (ej. "[1]ABBUEI!$G:$G").
+_EXTERNAL_REF_RE = re.compile(r"\[\d+\]")
+
+
 def _strip_external_links(wb: openpyxl.Workbook) -> int:
     """Elimina las referencias a fórmulas externas (externalLinks) de un workbook.
 
@@ -143,7 +148,61 @@ def _strip_external_links(wb: openpyxl.Workbook) -> int:
     if hasattr(wb, "_external_links") and wb._external_links:
         count = len(wb._external_links)
         wb._external_links.clear()
+
+    # Eliminar nombres definidos que apunten a libros externos (ej. "[1]Hoja!$A:$A")
+    # para que no queden referencias colgantes tras quitar los externalLinks.
+    try:
+        for name, defined in list(wb.defined_names.items()):
+            value = getattr(defined, "value", None) or getattr(defined, "attr_text", None) or ""
+            if isinstance(value, str) and _EXTERNAL_REF_RE.search(value):
+                wb.defined_names.pop(name, None)
+                count += 1
+    except Exception:
+        pass
+
     return count
+
+
+def _resolve_external_link_formulas(wb: openpyxl.Workbook, source_path: Path | str) -> int:
+    """Sustituye fórmulas que referencian libros externos por su valor en caché.
+
+    Al guardar con openpyxl y eliminar las referencias externas, las fórmulas que
+    apuntaban a otros libros (ej. `=+_xlfn.XLOOKUP(AJ79,[1]ABBUEI!$G:$G,...)`)
+    quedan con referencias colgantes y Excel las elimina al "reparar" el libro.
+
+    Para evitarlo, se carga el mismo archivo con `data_only=True` (que devuelve el
+    último valor calculado por Excel) y se reemplaza cada fórmula con referencia
+    externa por dicho valor.
+
+    Args:
+        wb: Workbook cargado con `data_only=False` (se modifica en el lugar).
+        source_path: Ruta del archivo fuente para leer los valores en caché.
+
+    Returns:
+        Número de celdas con fórmula externa sustituidas.
+    """
+    try:
+        wb_values = openpyxl.load_workbook(source_path, data_only=True, read_only=True)
+    except Exception:
+        return 0
+
+    replaced = 0
+    try:
+        for ws in wb.worksheets:
+            if ws.title not in wb_values.sheetnames:
+                continue
+            ws_values = wb_values[ws.title]
+            for row in ws.iter_rows():
+                for cell in row:
+                    val = cell.value
+                    if isinstance(val, str) and val.startswith("=") and _EXTERNAL_REF_RE.search(val):
+                        cached = ws_values.cell(cell.row, cell.column).value
+                        cell.value = cached
+                        replaced += 1
+    finally:
+        wb_values.close()
+
+    return replaced
 
 
 def create_timestamped_backup(file_path: Path | str, backup_dir: Optional[Path | str] = None) -> Path:
@@ -292,8 +351,11 @@ def apply_direct_cierre(
     # ---------------------------------------------------------
     try:
         wb_sist = openpyxl.load_workbook(path_sist, data_only=False)
-        # Eliminar tablas dinámicas y referencias externas para evitar el mensaje
-        # de reparación de Excel. El backup previo garantiza integridad del original.
+        # Sanear el libro antes de guardar para evitar el aviso de reparación de Excel:
+        #  1) sustituir fórmulas con referencias externas por su valor en caché,
+        #  2) eliminar tablas dinámicas y referencias externas.
+        # El backup previo garantiza la integridad del original.
+        _resolve_external_link_formulas(wb_sist, path_sist)
         _strip_pivot_tables(wb_sist)
         _strip_external_links(wb_sist)
         ws_sist = wb_sist["Formato"] if "Formato" in wb_sist.sheetnames else wb_sist.active
@@ -423,8 +485,8 @@ def apply_direct_cierre(
     # ---------------------------------------------------------
     try:
         wb_cert = openpyxl.load_workbook(path_cert, data_only=False)
-        # Eliminar tablas dinámicas y referencias externas para evitar el mensaje
-        # de reparación de Excel. El backup previo garantiza integridad del original.
+        # Sanear fórmulas externas, tablas dinámicas y referencias externas.
+        _resolve_external_link_formulas(wb_cert, path_cert)
         _strip_pivot_tables(wb_cert)
         _strip_external_links(wb_cert)
         if "Códigos" in wb_cert.sheetnames:
@@ -551,8 +613,8 @@ def apply_direct_cierre(
     # ---------------------------------------------------------
     try:
         wb_ctrl = openpyxl.load_workbook(path_ctrl, data_only=False)
-        # Eliminar tablas dinámicas y referencias externas para evitar el mensaje
-        # de reparación de Excel. El backup previo garantiza integridad del original.
+        # Sanear fórmulas externas, tablas dinámicas y referencias externas.
+        _resolve_external_link_formulas(wb_ctrl, path_ctrl)
         _strip_pivot_tables(wb_ctrl)
         _strip_external_links(wb_ctrl)
         fecha_cierre_hoy = datetime.now().strftime("%d/%m/%Y")

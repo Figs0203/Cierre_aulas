@@ -114,8 +114,11 @@ oficiales de la biblioteca. Ajustes recientes (formato oficial):
 - Certificados: **toda la información centrada** y la columna **N° (col 1) es la
   única sin borde inferior grueso** en la fila de fin de clase.
 - Saneo al guardar oficiales: además de PivotTables, se eliminan las
-  **referencias externas** (`externalLinks`) con `_strip_external_links` para
-  evitar el aviso de "reparación" de Excel en Sistematización.
+  **referencias externas** y se **sustituyen las fórmulas con referencias a
+  libros externos** (`[N]Libro!`) por su valor en caché antes de eliminarlas,
+  con `_resolve_external_link_formulas` + `_strip_external_links` (también
+  elimina nombres definidos que apuntan a libros externos). Esto evita el aviso
+  de "reparación" de Excel ("Registros quitados: Fórmula de sheetN.xml").
 - Fix de claves del mapa de columnas en `apply_direct_cierre`: el parser usa
   `estado`, `elaboro`, `codigo_cert`, `envio` (antes se buscaban
   `estado_certificacion`, etc.), por lo que las columnas *Estado para
