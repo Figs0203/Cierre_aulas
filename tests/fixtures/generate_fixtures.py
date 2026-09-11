@@ -164,7 +164,7 @@ def create_synthetic_certificados(path: Path) -> None:
 
     # Registros históricos previos
     prev_rows = [
-        [1, "2026-1 / 001", "ABBUEI100 - Prof. Maria Lopez", "Pedro Pablo", "Ramirez Silva", "1000000099", "pedro.ramirez@ejemplo.edu.co", "ABBUEI100", "15-may-2026", 2026, 1, 1, None],
+        [1, "2026-1 / 001", "ABBUEI100 - Prof. Maria Lopez", "Pedro Pablo", "Ramirez Silva", "1000000099", "pedro.ramirez@ejemplo.edu.co", "ABBUEI100", "15-may-2026", 2026, "2026-1", 1, None],
     ]
 
     for r in prev_rows:

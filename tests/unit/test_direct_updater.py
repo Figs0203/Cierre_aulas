@@ -248,6 +248,19 @@ class TestDirectUpdater(unittest.TestCase):
             # 5. Bordes entre clases: Fila 2 (fin de 5535) y Fila 3 (fin de 5536) con borde medium
             self.assertEqual(ws_sist.cell(2, 1).border.bottom.style, "medium")
             self.assertEqual(ws_sist.cell(3, 1).border.bottom.style, "medium")
+
+            # 5b. TODAS las celdas de las filas procesadas tienen los cuatro bordes.
+            #     La celda de fin de clase conserva los tres lados finos además del inferior grueso.
+            for r in (2, 3):
+                for c in range(1, 16):
+                    b = ws_sist.cell(r, c).border
+                    self.assertIsNotNone(b.left.style, f"Falta borde izquierdo en Sist r{r}c{c}")
+                    self.assertIsNotNone(b.right.style, f"Falta borde derecho en Sist r{r}c{c}")
+                    self.assertIsNotNone(b.top.style, f"Falta borde superior en Sist r{r}c{c}")
+                    self.assertIsNotNone(b.bottom.style, f"Falta borde inferior en Sist r{r}c{c}")
+            # Los lados de la celda de fin de clase son finos (no vacíos) y solo el inferior es grueso
+            self.assertEqual(ws_sist.cell(2, 1).border.left.style, "thin")
+            self.assertEqual(ws_sist.cell(2, 1).border.top.style, "thin")
             wb_sist.close()
 
             # -------------------------------------------------------------
@@ -275,6 +288,27 @@ class TestDirectUpdater(unittest.TestCase):
             self.assertEqual(ws_cert.cell(4, 4).value, "ANA MARIA")
             self.assertEqual(ws_cert.cell(4, 12).value, 1)
             self.assertEqual(ws_cert.cell(4, 1).border.bottom.style, "medium")  # Borde fin de clase 5536
+
+            # Fuente oficial de la tabla de Certificados: Zurich Cn BT 11
+            self.assertEqual(ws_cert.cell(3, 1).font.name, "Zurich Cn BT")
+            self.assertEqual(ws_cert.cell(3, 1).font.size, 11)
+            self.assertEqual(ws_cert.cell(4, 1).font.name, "Zurich Cn BT")
+            self.assertEqual(ws_cert.cell(4, 1).font.size, 11)
+
+            # TODAS las celdas anexadas tienen los cuatro bordes (incluida la de fin de clase)
+            for r in (3, 4):
+                for c in range(1, 14):
+                    b = ws_cert.cell(r, c).border
+                    self.assertIsNotNone(b.left.style, f"Falta borde izquierdo en Cert r{r}c{c}")
+                    self.assertIsNotNone(b.right.style, f"Falta borde derecho en Cert r{r}c{c}")
+                    self.assertIsNotNone(b.top.style, f"Falta borde superior en Cert r{r}c{c}")
+                    self.assertIsNotNone(b.bottom.style, f"Falta borde inferior en Cert r{r}c{c}")
+
+            # Columna 'Semestre' (11) en formato oficial 'AAAA-S'
+            import re as _re
+            for r in (3, 4):
+                sem = str(ws_cert.cell(r, 11).value or "")
+                self.assertRegex(sem, _re.compile(r"^\d{4}-[12]$"), f"Semestre con formato inesperado: {sem!r}")
             wb_cert.close()
 
             # -------------------------------------------------------------

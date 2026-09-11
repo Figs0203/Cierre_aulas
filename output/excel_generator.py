@@ -23,7 +23,12 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
 from core.models import AulaCierreResult, AulaMetadata, ClaseGroup
-from normalization.dates import format_certificate_date, format_ciclo_date, get_semester
+from normalization.dates import (
+    format_certificate_date,
+    format_ciclo_date,
+    format_semester_label,
+    parse_date,
+)
 from normalization.text import format_ciclo, format_docente_coin
 
 
@@ -34,24 +39,30 @@ _FONT_SUBTITLE = Font(name="Calibri", size=11, bold=True, color="333333")
 _FONT_BODY = Font(name="Calibri", size=10)
 _FONT_MUTED = Font(name="Calibri", size=9, italic=True, color="666666")
 
+# Fuente oficial de la tabla de Certificados (confirmado: Zurich Cn BT 11).
+_FONT_CERTIFICADO = Font(name="Zurich Cn BT", size=11)
+
 _FILL_PRIMARY = PatternFill(start_color="1F4E79", end_color="1F4E79", fill_type="solid")
 _FILL_HEADER = PatternFill(start_color="2F5597", end_color="2F5597", fill_type="solid")
 _FILL_SUCCESS = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
 _FILL_WARNING = PatternFill(start_color="FFF2CC", end_color="FFF2CC", fill_type="solid")
 _FILL_ALERT = PatternFill(start_color="F8CBAD", end_color="F8CBAD", fill_type="solid")
 
+_BORDER_COLOR = "000000"
+
 _BORDER_THIN = Border(
-    left=Side(style="thin", color="D9D9D9"),
-    right=Side(style="thin", color="D9D9D9"),
-    top=Side(style="thin", color="D9D9D9"),
-    bottom=Side(style="thin", color="D9D9D9"),
+    left=Side(style="thin", color=_BORDER_COLOR),
+    right=Side(style="thin", color=_BORDER_COLOR),
+    top=Side(style="thin", color=_BORDER_COLOR),
+    bottom=Side(style="thin", color=_BORDER_COLOR),
 )
 
+# La celda de fin de clase conserva los cuatro bordes: tres lados finos + inferior grueso.
 _BORDER_CLASS_SEPARATOR = Border(
-    left=Side(style="thin", color="D9D9D9"),
-    right=Side(style="thin", color="D9D9D9"),
-    top=Side(style="thin", color="D9D9D9"),
-    bottom=Side(style="medium", color="000000"),
+    left=Side(style="thin", color=_BORDER_COLOR),
+    right=Side(style="thin", color=_BORDER_COLOR),
+    top=Side(style="thin", color=_BORDER_COLOR),
+    bottom=Side(style="medium", color=_BORDER_COLOR),
 )
 
 
@@ -193,7 +204,17 @@ def generate_cierre_excel(
     }
 
     sist_r = 2
-    for es in all_sist_students:
+    for s_idx, es in enumerate(all_sist_students):
+        # Determinar si esta fila cierra una clase (comparando con el siguiente estudiante)
+        current_clase = str(es.clase.value if es.clase and es.clase.value else "").strip()
+        is_last_of_class = (s_idx == len(all_sist_students) - 1)
+        if not is_last_of_class:
+            next_es = all_sist_students[s_idx + 1]
+            next_clase = str(next_es.clase.value if next_es.clase and next_es.clase.value else "").strip()
+            if current_clase != next_clase:
+                is_last_of_class = True
+        row_border = _BORDER_CLASS_SEPARATOR if is_last_of_class else _BORDER_THIN
+
         for col_idx in range(1, len(sist_headers) + 1):
             val = es.raw_row_data.get(col_idx, None)
             # Todo en mayúsculas, excepto correos electrónicos y estados con formato oficial exacto
@@ -210,7 +231,7 @@ def generate_cierre_excel(
                         val = val.upper()
             cell = ws_sist.cell(sist_r, col_idx, val)
             cell.font = _FONT_BODY
-            cell.border = _BORDER_THIN
+            cell.border = row_border
         sist_r += 1
 
     # ============================================================
@@ -252,7 +273,7 @@ def generate_cierre_excel(
         programa_str = meta.programa_academico.value if meta.programa_academico else ""
         catalogo_str = meta.catalogo.value if meta.catalogo else ""
         f_ini_dt = meta.fecha_inicio.value if meta.fecha_inicio else None
-        f_fin_dt = meta.fecha_fin.value if meta.fecha_fin else None
+        f_fin_dt = parse_date(meta.fecha_fin.value) if meta.fecha_fin else None
 
         f_ini_str = format_ciclo_date(f_ini_dt) if f_ini_dt else ""
         f_fin_str = format_ciclo_date(f_fin_dt) if f_fin_dt else ""
@@ -268,7 +289,8 @@ def generate_cierre_excel(
 
         # Docente COIN completamente en MAYÚSCULAS
         docente_coin_val = format_docente_coin(codigo_curso, formador_lider).strip().upper()
-        semestre_val = get_semester(f_fin_dt) if f_fin_dt else 1
+        # Columna 'Semestre': periodo académico con formato oficial 'AAAA-S' (ej. '2026-1').
+        semestre_val = format_semester_label(f_fin_dt) if f_fin_dt else ""
         ano_val = f_fin_dt.year if isinstance(f_fin_dt, (date, datetime)) else 2026
 
         nom = str(es.nombres.value if es.nombres else "").strip().upper()
@@ -308,7 +330,7 @@ def generate_cierre_excel(
 
         for c_idx, val in enumerate(row_cert, start=1):
             cell = ws_cert.cell(cert_r, c_idx, val)
-            cell.font = _FONT_BODY
+            cell.font = _FONT_CERTIFICADO
             cell.border = border_cell
             if c_idx in (1, 10, 11, 12):
                 cell.alignment = Alignment(horizontal="center")

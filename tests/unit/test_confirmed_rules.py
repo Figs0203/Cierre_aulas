@@ -383,6 +383,24 @@ class TestFormatoFeedbackAjustes:
         # Fila 3 (es2, fin de clase 5536 y última fila) también debe tener borde inferior 'medium'
         assert ws_cert.cell(3, 1).border.bottom.style == "medium"
 
+        # Fuente oficial de Certificados: Zurich Cn BT 11
+        assert ws_cert.cell(2, 1).font.name == "Zurich Cn BT"
+        assert ws_cert.cell(2, 1).font.size == 11
+
+        # Todos los bordes presentes en las celdas anexadas (incluida la de fin de clase)
+        for _r in (2, 3):
+            for _c in range(1, 14):
+                _b = ws_cert.cell(_r, _c).border
+                assert _b.left.style and _b.right.style and _b.top.style and _b.bottom.style, (
+                    f"Faltan bordes en CERTIFICADOS r{_r}c{_c}"
+                )
+
+        # Columna 'Semestre' (11) en formato oficial 'AAAA-S'
+        import re as _re
+        for _r in (2, 3):
+            _sem = str(ws_cert.cell(_r, 11).value or "")
+            assert _re.match(r"^\d{4}-[12]$", _sem), f"Semestre con formato inesperado: {_sem!r}"
+
         # Verificar hoja SISTEMATIZACION
         ws_sist = wb["SISTEMATIZACION"]
         # Fila 2: Nombres en mayúsculas, Estado 'Aprobó' preservado, 'No aplica' preservado, correo en minúsculas

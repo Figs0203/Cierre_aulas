@@ -41,3 +41,6 @@ discovery_*.txt
 *.swo
 .DS_Store
 Thumbs.db
+
+# Grafo de conocimiento local (generado por graphify, no versionar)
+graphify-out/

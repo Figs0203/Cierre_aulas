@@ -20,6 +20,7 @@ from normalization.dates import (
     format_date_certificados,
     extract_year,
     extract_semester,
+    format_semester_label,
 )
 from normalization.headers import analyze_headers
 
@@ -77,9 +78,26 @@ class TestNormalization(unittest.TestCase):
 
         # Año y semestre
         self.assertEqual(extract_year(d1), 2025)
-        self.assertEqual(extract_semester(d1), 1)
-        d_sem2 = date(2025, 10, 1)
-        self.assertEqual(extract_semester(d_sem2), 2)
+        # Semestre 1: 1 de noviembre → último día de abril.
+        self.assertEqual(extract_semester(date(2025, 11, 1)), 1)
+        self.assertEqual(extract_semester(date(2025, 12, 31)), 1)
+        self.assertEqual(extract_semester(date(2026, 1, 15)), 1)
+        self.assertEqual(extract_semester(date(2026, 4, 30)), 1)
+        # Semestre 2: 1 de mayo → 31 de octubre.
+        self.assertEqual(extract_semester(date(2025, 5, 1)), 2)
+        self.assertEqual(extract_semester(date(2025, 10, 31)), 2)
+        self.assertEqual(extract_semester(d1), 2)  # 2025-06-16 → semestre 2
+        self.assertEqual(extract_semester(date(2025, 10, 1)), 2)
+
+    def test_semester_label_format(self):
+        # Formato oficial de la columna 'Semestre' en Certificados: 'AAAA-S'
+        self.assertEqual(format_semester_label(date(2022, 2, 7)), "2022-1")
+        self.assertEqual(format_semester_label(date(2022, 3, 28)), "2022-1")
+        self.assertEqual(format_semester_label(date(2025, 10, 1)), "2025-2")
+        self.assertEqual(format_semester_label(date(2026, 12, 15)), "2026-1")
+        self.assertEqual(format_semester_label("16/06/2025"), "2025-2")
+        self.assertEqual(format_semester_label(None), "")
+        self.assertEqual(format_semester_label("fecha-invalida"), "")
 
     def test_header_analysis(self):
         headers = [

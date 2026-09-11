@@ -48,25 +48,39 @@ from config.settings import (
     VALOR_NO_APLICA,
 )
 from core.models import AulaCierreResult, AulaMetadata, ClaseGroup, StudentMatch
-from normalization.dates import format_certificate_date, format_ciclo_date, get_semester
+from normalization.dates import (
+    format_certificate_date,
+    format_ciclo_date,
+    format_semester_label,
+    parse_date,
+)
 from normalization.text import format_ciclo, format_docente_coin, normalize_document
 
-# Estilos de bordes oficiales
+# Estilos de bordes oficiales.
+# Todos los bordes se dibujan en negro (mismo color en los cuatro lados) para que
+# sean visibles y consistentes con el formato de los archivos oficiales.
+_BORDER_COLOR = "000000"
+
 _BORDER_THIN = Border(
-    left=Side(style="thin", color="D9D9D9"),
-    right=Side(style="thin", color="D9D9D9"),
-    top=Side(style="thin", color="D9D9D9"),
-    bottom=Side(style="thin", color="D9D9D9"),
+    left=Side(style="thin", color=_BORDER_COLOR),
+    right=Side(style="thin", color=_BORDER_COLOR),
+    top=Side(style="thin", color=_BORDER_COLOR),
+    bottom=Side(style="thin", color=_BORDER_COLOR),
 )
 
+# La celda de fin de clase conserva los cuatro bordes: los tres lados con el mismo
+# estilo fino que el resto de la tabla y solo el borde inferior en 'medium' (grueso).
 _BORDER_CLASS_SEPARATOR = Border(
-    left=Side(style="thin", color="D9D9D9"),
-    right=Side(style="thin", color="D9D9D9"),
-    top=Side(style="thin", color="D9D9D9"),
-    bottom=Side(style="medium", color="000000"),
+    left=Side(style="thin", color=_BORDER_COLOR),
+    right=Side(style="thin", color=_BORDER_COLOR),
+    top=Side(style="thin", color=_BORDER_COLOR),
+    bottom=Side(style="medium", color=_BORDER_COLOR),
 )
 
 _FONT_BODY = Font(name="Calibri", size=10)
+
+# Fuente oficial de la tabla de Certificados (confirmado: Zurich Cn BT 11).
+_FONT_CERTIFICADO = Font(name="Zurich Cn BT", size=11)
 
 
 @dataclass
@@ -341,7 +355,9 @@ def apply_direct_cierre(
                     # Celda con datos preexistentes: NO TOCAR
                     report.sistematizacion_untouched_cells += 1
 
-            # 3. Separador con borde inferior grueso al terminar cada clase distinta
+            # 3. Bordes en TODAS las celdas de la fila procesada.
+            #    - Fila normal: caja completa con bordes finos.
+            #    - Fila de fin de clase: los mismos tres lados finos + borde inferior grueso.
             current_clase = str(es.clase.value if es.clase and es.clase.value else cg.clase_id).strip()
             is_last_of_class = False
             if idx == len(all_matches) - 1:
@@ -353,9 +369,9 @@ def apply_direct_cierre(
                 if current_clase != next_clase:
                     is_last_of_class = True
 
-            if is_last_of_class:
-                for c in range(1, max_col_sist + 1):
-                    ws_sist.cell(r_idx, c).border = _BORDER_CLASS_SEPARATOR
+            row_border = _BORDER_CLASS_SEPARATOR if is_last_of_class else _BORDER_THIN
+            for c in range(1, max_col_sist + 1):
+                ws_sist.cell(r_idx, c).border = row_border
 
         wb_sist.save(path_sist)
         wb_sist.close()
@@ -412,8 +428,8 @@ def apply_direct_cierre(
             meta = (metadatos_control or {}).get(cg.clase_id) or AulaMetadata()
             programa_str = meta.programa_academico.value if meta.programa_academico else ""
             catalogo_str = meta.catalogo.value if meta.catalogo else ""
-            f_ini_dt = meta.fecha_inicio.value if meta.fecha_inicio else None
-            f_fin_dt = meta.fecha_fin.value if meta.fecha_fin else None
+            f_ini_dt = parse_date(meta.fecha_inicio.value) if meta.fecha_inicio else None
+            f_fin_dt = parse_date(meta.fecha_fin.value) if meta.fecha_fin else None
 
             f_ini_str = format_ciclo_date(f_ini_dt) if f_ini_dt else ""
             f_fin_str = format_ciclo_date(f_fin_dt) if f_fin_dt else ""
@@ -428,7 +444,8 @@ def apply_direct_cierre(
                 formador_lider = str(meta.docente_principal.value).strip()
 
             docente_coin_val = format_docente_coin(codigo_curso, formador_lider).strip().upper()
-            semestre_val = get_semester(f_fin_dt) if f_fin_dt else 1
+            # Columna 'Semestre': periodo académico con formato oficial 'AAAA-S' (ej. '2026-1').
+            semestre_val = format_semester_label(f_fin_dt) if f_fin_dt else ""
             ano_val = f_fin_dt.year if isinstance(f_fin_dt, (date, datetime)) else 2026
 
             nom = str(es.nombres.value if es.nombres else "").strip().upper()
@@ -468,7 +485,7 @@ def apply_direct_cierre(
 
             for c_idx, val in enumerate(row_cert, start=1):
                 cell = ws_cert.cell(curr_cert_r, c_idx, val)
-                cell.font = _FONT_BODY
+                cell.font = _FONT_CERTIFICADO
                 cell.border = border_cell
                 if c_idx in (1, 10, 11, 12):
                     cell.alignment = Alignment(horizontal="center")
