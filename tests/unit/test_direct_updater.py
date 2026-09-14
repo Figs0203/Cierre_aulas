@@ -439,6 +439,103 @@ class TestDirectUpdater(unittest.TestCase):
                         content = z.read(name).decode("utf-8", "ignore")
                         self.assertIsNone(_re.search(r"\[\d+\]", content), f"Referencia externa en {name}")
 
+    def test_preserves_x14_data_validations(self):
+        """Las listas de validación modernas (x14:dataValidations) no deben perderse al aplicar el cierre.
+
+        openpyxl descarta las extensiones de hoja al guardar. El actualizador debe
+        reinyectarlas desde el backup para no perder las listas desplegables.
+        """
+        import zipfile as _zip
+        from output.direct_updater import apply_direct_cierre
+
+        with tempfile.TemporaryDirectory() as tmp_str:
+            tmpdir = Path(tmp_str)
+            files = self._create_mock_files(tmpdir)
+            path_sist = files["sistematizacion"]
+
+            # Inyectar un x14:dataValidations en la hoja 'Formato' (sheet1.xml)
+            ext_xml = (
+                '<extLst><ext uri="{CCE6A557-97BC-4b89-ADB6-D9C93CAAB3DF}" '
+                'xmlns:x14="http://schemas.microsoft.com/office/spreadsheetml/2009/9/main">'
+                '<x14:dataValidations count="1" xmlns:xm="http://schemas.microsoft.com/office/excel/2006/main">'
+                '<x14:dataValidation type="list" allowBlank="1">'
+                '<x14:formula1><xm:f>Lista!$A$1:$A$3</xm:f></x14:formula1>'
+                '<xm:sqref>N2:N10</xm:sqref></x14:dataValidation></x14:dataValidations></ext></extLst>'
+            )
+            with _zip.ZipFile(path_sist) as z:
+                members = {n: z.read(n) for n in z.namelist()}
+            sheet_key = "xl/worksheets/sheet1.xml"
+            assert sheet_key in members, f"No se encontró {sheet_key} en el mock"
+            xml = members[sheet_key].decode("utf-8")
+            members[sheet_key] = xml.replace("</worksheet>", ext_xml + "</worksheet>").encode("utf-8")
+            with _zip.ZipFile(path_sist, "w", _zip.ZIP_DEFLATED) as zo:
+                for n, d in members.items():
+                    zo.writestr(n, d)
+
+            # Ejecutar el cierre directo
+            col_map = {
+                "nombres": 2, "apellidos": 3, "clase": 4, "documento": 5, "correo": 6,
+                "modulo_1": 7, "modulo_2": 8, "promedio": 12, "estado_certificacion": 13,
+                "elaboro_certificado": 14, "codigo_certificado": 15,
+                "envio_certificado": 16, "fecha_envio": 17,
+            }
+
+            def tv(val, col, row):
+                return TracedValue(val, "S", "Formato", col, 1, row)
+
+            es1 = EstudianteSistematizacion(
+                row_number=2,
+                nombres=tv("carlos andres", "Nombres", 2),
+                apellidos=tv("perez gomez", "Apellidos", 2),
+                clase=tv("5535", "Clase", 2),
+                documento=tv("1001", "Documento", 2),
+                correo=tv("cperez@eafit.edu.co", "Correo", 2),
+                estado_calculado="Aprobó",
+                column_indices=col_map,
+                raw_row_data={7: 5.0, 8: 4.8, 12: 4.8, 13: "Aprobó", 14: "SI", 15: "ABBUEI205", 16: "SI", 17: "27 DE ABRIL DE 2026"},
+            )
+            en = EstudianteNotas(row_number=2)
+            m = StudentMatch(estudiante_sist=es1, estudiante_nota=en, match_key="doc", match_value="1001")
+            cg = ClaseGroup(clase_id="5535", matches=[m])
+            res = AulaCierreResult(aula=AulaMetadata(), clases=[cg])
+
+            report = apply_direct_cierre(
+                file_paths=files, result=res, codigo_curso="ABBUEI205", start_consecutivo=1,
+            )
+            self.assertTrue(report.is_successful, report.errors)
+
+            # La lista de validación debe seguir presente y sin duplicar el extLst
+            with _zip.ZipFile(path_sist) as z:
+                content = z.read(sheet_key).decode("utf-8", "ignore")
+                self.assertIn("x14:dataValidations", content)
+                self.assertIn("Lista!$A$1:$A$3", content)
+                self.assertEqual(content.count("<extLst"), 1)
+                self.assertEqual(z.testzip(), None)
+
+            # El libro debe seguir siendo legible
+            wb = openpyxl.load_workbook(path_sist, data_only=True)
+            self.assertIn("Formato", wb.sheetnames)
+            wb.close()
+
+    def test_preserves_extlst_when_output_already_has_one(self):
+        """Si openpyxl ya escribió un extLst, las extensiones originales se fusionan sin duplicar."""
+        from output.direct_updater import _merge_extlst_into_sheet_xml
+
+        source = '<extLst><ext uri="{AAA}"><x14:dv/></ext></extLst>'
+        # Salida con un extLst preexistente de otro uri -> se fusionan en un único extLst
+        out = _merge_extlst_into_sheet_xml(
+            '<worksheet><data/><extLst><ext uri="{BBB}"><other/></ext></extLst></worksheet>',
+            source,
+        )
+        self.assertEqual(out.count("<extLst"), 1)
+        self.assertIn('uri="{BBB}"', out)
+        self.assertIn('uri="{AAA}"', out)
+
+        # Idempotencia: aplicar de nuevo no duplica
+        out2 = _merge_extlst_into_sheet_xml(out, source)
+        self.assertEqual(out2.count("<extLst"), 1)
+        self.assertEqual(out2.count('uri="{AAA}"'), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

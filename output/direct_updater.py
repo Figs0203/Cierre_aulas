@@ -33,6 +33,7 @@ from __future__ import annotations
 import os
 import re
 import shutil
+import zipfile
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
@@ -205,6 +206,204 @@ def _resolve_external_link_formulas(wb: openpyxl.Workbook, source_path: Path | s
     return replaced
 
 
+# ---------------------------------------------------------------------------
+# PRESERVACIÓN DE EXTENSIONES DE HOJA (listas de validación modernas x14, etc.)
+# ---------------------------------------------------------------------------
+# openpyxl no soporta las extensiones de hoja (`extLst`), por lo que al guardar
+# descarta, entre otras, las listas de validación de datos modernas
+# (`x14:dataValidations`) y el formato condicional moderno (`x14:conditionalFormatting`).
+# Para no perderlas, se copian desde el archivo original (aún intacto en disco
+# antes del guardado) y se reinyectan en cada hoja del archivo ya guardado.
+
+# Bloque <extLst> de una hoja de cálculo (no anidado).
+_SHEET_EXTLST_RE = re.compile(r"<extLst\b[^>]*>.*?</extLst>", re.DOTALL)
+# Bloque <ext ...>...</ext> individual dentro de un extLst.
+_EXT_BLOCK_RE = re.compile(r"<ext\b[^>]*>.*?</ext>", re.DOTALL)
+# Atributo uri="..." de un <ext ...>
+_EXT_URI_RE = re.compile(r'<ext\b[^>]*\buri="([^"]+)"')
+
+
+def _read_sheet_names_by_path(zf: "zipfile.ZipFile") -> Dict[str, str]:
+    """Mapea el nombre de cada hoja a su ruta interna (p. ej. 'Formato' -> 'xl/worksheets/sheet2.xml').
+
+    El mapeo se obtiene de `xl/workbook.xml` (nombre + r:id) y de
+    `xl/_rels/workbook.xml.rels` (r:id -> destino).
+
+    Args:
+        zf: Archivo .xlsx abierto como zip en modo lectura.
+
+    Returns:
+        Diccionario {nombre_hoja: ruta_dentro_del_zip}.
+    """
+    mapping: Dict[str, str] = {}
+    try:
+        workbook_xml = zf.read("xl/workbook.xml").decode("utf-8", "ignore")
+        rels_xml = zf.read("xl/_rels/workbook.xml.rels").decode("utf-8", "ignore")
+    except KeyError:
+        return mapping
+
+    # rId -> Target (ruta relativa a xl/)
+    rel_targets: Dict[str, str] = {}
+    for m in re.finditer(r'<Relationship\b[^>]*>', rels_xml):
+        tag = m.group(0)
+        rid_m = re.search(r'Id="([^"]+)"', tag)
+        target_m = re.search(r'Target="([^"]+)"', tag)
+        if rid_m and target_m:
+            target = target_m.group(1).lstrip("/")
+            if not target.startswith("xl/"):
+                target = "xl/" + target
+            rel_targets[rid_m.group(1)] = target
+
+    # sheet name + r:id
+    for m in re.finditer(r'<sheet\b[^>]*>', workbook_xml):
+        tag = m.group(0)
+        name_m = re.search(r'name="([^"]+)"', tag)
+        rid_m = re.search(r'r:id="([^"]+)"', tag)
+        if name_m and rid_m and rid_m.group(1) in rel_targets:
+            mapping[name_m.group(1)] = rel_targets[rid_m.group(1)]
+
+    return mapping
+
+
+def _extract_sheet_extlst(zf: "zipfile.ZipFile", sheet_path: str) -> Optional[str]:
+    """Extrae el bloque <extLst>...</extLst> del XML de una hoja, o None si no existe."""
+    try:
+        xml = zf.read(sheet_path).decode("utf-8", "ignore")
+    except KeyError:
+        return None
+    m = _SHEET_EXTLST_RE.search(xml)
+    return m.group(0) if m else None
+
+
+def _restore_sheet_extensions(
+    output_path: Path | str,
+    source_path: Path | str,
+) -> int:
+    """Reinyecta las extensiones de hoja (`extLst`) del archivo original en el guardado.
+
+    openpyxl descarta las extensiones `x14` (listas de validación modernas, formato
+    condicional moderno, etc.) al guardar. Esta función las recupera del archivo
+    original (que debe seguir intacto en disco) y las combina hoja por hoja en el
+    archivo recién guardado, preservando cualquier `<ext>` que openpyxl haya escrito.
+
+    Args:
+        output_path: Ruta del archivo ya guardado por openpyxl (se reescribe).
+        source_path: Ruta del archivo original con las extensiones (backup o el
+            original todavía sin sobrescribir).
+
+    Returns:
+        Número de hojas a las que se les reinyectaron extensiones.
+    """
+    output_path = Path(output_path)
+    source_path = Path(source_path)
+    if not output_path.exists() or not source_path.exists():
+        return 0
+
+    # Leer el archivo original y localizar las extensiones por hoja
+    original_extlst_by_sheet: Dict[str, str] = {}
+    with zipfile.ZipFile(source_path, "r") as zf_src:
+        name_to_path = _read_sheet_names_by_path(zf_src)
+        for sheet_name, sheet_path in name_to_path.items():
+            extlst = _extract_sheet_extlst(zf_src, sheet_path)
+            if extlst:
+                original_extlst_by_sheet[sheet_name] = extlst
+
+    if not original_extlst_by_sheet:
+        return 0
+
+    # Leer el archivo guardado, modificar las hojas y reescribir el zip
+    with zipfile.ZipFile(output_path, "r") as zf_out:
+        members: Dict[str, bytes] = {n: zf_out.read(n) for n in zf_out.namelist()}
+        infos = {i.filename: i for i in zf_out.infolist()}
+
+    name_to_path_out = _read_sheet_names_by_path_dict(members)
+
+    restored = 0
+    for sheet_name, extlst in original_extlst_by_sheet.items():
+        sheet_path = name_to_path_out.get(sheet_name)
+        if not sheet_path or sheet_path not in members:
+            continue
+        xml = members[sheet_path].decode("utf-8", "ignore")
+        new_xml = _merge_extlst_into_sheet_xml(xml, extlst)
+        if new_xml is not None and new_xml != xml:
+            members[sheet_path] = new_xml.encode("utf-8")
+            restored += 1
+
+    if restored == 0:
+        return 0
+
+    # Reescribir el zip preservando el orden original de las partes
+    import tempfile as _tempfile
+    import os as _os
+    fd, tmp_name = _tempfile.mkstemp(suffix=".xlsx", dir=str(output_path.parent))
+    _os.close(fd)
+    tmp_path = Path(tmp_name)
+    try:
+        with zipfile.ZipFile(tmp_path, "w", zipfile.ZIP_DEFLATED) as zf_new:
+            for name in members:
+                info = infos.get(name)
+                # Preservar compresión/timestamp cuando sea posible
+                if info is not None:
+                    zf_new.writestr(info, members[name])
+                else:
+                    zf_new.writestr(name, members[name])
+        _os.replace(tmp_path, output_path)
+    finally:
+        if tmp_path.exists():
+            try:
+                tmp_path.unlink()
+            except OSError:
+                pass
+
+    return restored
+
+
+def _read_sheet_names_by_path_dict(members: Dict[str, bytes]) -> Dict[str, str]:
+    """Igual que `_read_sheet_names_by_path` pero sobre un dict de partes ya leídas."""
+    class _MemZip:
+        def __init__(self, parts: Dict[str, bytes]):
+            self._parts = parts
+
+        def read(self, name: str) -> bytes:
+            return self._parts[name]
+
+    return _read_sheet_names_by_path(_MemZip(members))
+
+
+def _merge_extlst_into_sheet_xml(sheet_xml: str, source_extlst: str) -> Optional[str]:
+    """Combina el `extLst` original dentro del XML de una hoja guardada por openpyxl.
+
+    - Si la hoja guardada no tiene `extLst`, se inserta el original antes de `</worksheet>`.
+    - Si ya tiene `extLst`, se añaden dentro los `<ext>` del original que no estén
+      ya presentes (comparando por `uri`), para evitar duplicados.
+
+    Returns:
+        El XML resultante, o None si no se pudo procesar.
+    """
+    try:
+        existing_m = _SHEET_EXTLST_RE.search(sheet_xml)
+        if not existing_m:
+            if "</worksheet>" not in sheet_xml:
+                return None
+            return sheet_xml.replace("</worksheet>", source_extlst + "</worksheet>", 1)
+
+        existing_extlst = existing_m.group(0)
+        existing_uris = {u.upper() for u in _EXT_URI_RE.findall(existing_extlst)}
+
+        # Bloques <ext> del origen que aún no están presentes
+        missing_exts = [
+            block for block in _EXT_BLOCK_RE.findall(source_extlst)
+            if not any(u.upper() in existing_uris for u in _EXT_URI_RE.findall(block))
+        ]
+        if not missing_exts:
+            return sheet_xml
+
+        merged_extlst = existing_extlst.replace("</extLst>", "".join(missing_exts) + "</extLst>", 1)
+        return sheet_xml.replace(existing_extlst, merged_extlst, 1)
+    except Exception:
+        return None
+
+
 def create_timestamped_backup(file_path: Path | str, backup_dir: Optional[Path | str] = None) -> Path:
     """Crea una copia de seguridad idéntica del archivo con marca de tiempo.
 
@@ -338,10 +537,15 @@ def apply_direct_cierre(
     # ---------------------------------------------------------
     # PASO 1: GENERACIÓN DE COPIAS DE SEGURIDAD (BACKUP)
     # ---------------------------------------------------------
-    for p in [path_sist, path_cert, path_ctrl]:
+    # Los backups también sirven como fuente de las extensiones de hoja
+    # (`extLst`: listas de validación modernas, formato condicional moderno, etc.)
+    # que openpyxl descarta al guardar.
+    backup_by_role: Dict[str, Path] = {}
+    for role, p in [("sistematizacion", path_sist), ("certificados", path_cert), ("control_aulas", path_ctrl)]:
         try:
             bk_path = create_timestamped_backup(p, backup_dir=backup_dir)
             report.backups_created.append(bk_path)
+            backup_by_role[role] = bk_path
         except Exception as e:
             report.errors.append(f"Error crítico al crear copia de seguridad de {p.name}: {e}")
             return report
@@ -477,6 +681,9 @@ def apply_direct_cierre(
 
         wb_sist.save(path_sist)
         wb_sist.close()
+        # Preservar las extensiones de hoja (listas de validación x14, formato
+        # condicional moderno, etc.) que openpyxl descarta al guardar.
+        _restore_sheet_extensions(path_sist, backup_by_role.get("sistematizacion", path_sist))
     except Exception as e:
         report.errors.append(f"Error al actualizar Sistematización: {e}")
 
@@ -605,6 +812,8 @@ def apply_direct_cierre(
 
         wb_cert.save(path_cert)
         wb_cert.close()
+        # Preservar las extensiones de hoja que openpyxl descarta al guardar.
+        _restore_sheet_extensions(path_cert, backup_by_role.get("certificados", path_cert))
     except Exception as e:
         report.errors.append(f"Error al anexar en Certificados: {e}")
 
@@ -659,6 +868,8 @@ def apply_direct_cierre(
 
         wb_ctrl.save(path_ctrl)
         wb_ctrl.close()
+        # Preservar las extensiones de hoja que openpyxl descarta al guardar.
+        _restore_sheet_extensions(path_ctrl, backup_by_role.get("control_aulas", path_ctrl))
     except Exception as e:
         report.errors.append(f"Error al actualizar Control de Aulas: {e}")
 

@@ -125,10 +125,17 @@ oficiales de la biblioteca. Ajustes recientes (formato oficial):
   certificación*, *Se elaboró*, *Código del certificado* y *Se envió* quedaban
   vacías.
 
+- **Preservación de listas de validación de datos**: openpyxl descarta las
+  extensiones de hoja (`extLst`), incluidas las listas modernas
+  `x14:dataValidations`. Tras guardar, `_restore_sheet_extensions` reinyecta el
+  `extLst` original (tomado del backup previo) hoja por hoja, fusionando por
+  `uri` para no duplicar. Así las listas desplegables no se pierden en cada
+  automatización.
+
 > Nota: el color de borde de las tablas escritas se fijó en negro para que sea
 > visible y consistente. Si el documento oficial usa otro color, se cambia en la
 > constante `_BORDER_COLOR` de `output/direct_updater.py` y
 > `output/excel_generator.py`.
 
-Última verificación: 36 tests OK. El grafo de conocimiento se regenera con
+Última verificación: 38 tests OK. El grafo de conocimiento se regenera con
 `graphify update .` tras cada cambio de código.
