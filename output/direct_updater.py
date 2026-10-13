@@ -773,7 +773,7 @@ def apply_direct_cierre(
                 doc,
                 cor,
                 str(codigo_curso).strip().upper(),
-                f_envio_cert_str.upper(),
+                f_envio_cert_str,
                 ano_val,
                 semestre_val,
                 1,  # Total certificados = 1

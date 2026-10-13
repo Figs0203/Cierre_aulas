@@ -121,6 +121,8 @@ oficiales de la biblioteca. Ajustes recientes (formato oficial):
 - Formato de la columna **Docente COIN**: `({CÓDIGO-CON-GUIÓN}) {NOMBRE}`,
   p. ej. `(CMI-120) NOMBRE` (`normalization/text.py:format_docente_coin`,
   `format_ciclo`).
+- Columna **Fecha de envío** de Certificados en minúsculas (mes abreviado),
+  p. ej. `28-sep-2026` (no se aplica `.upper()`).
 - Certificados: **toda la información centrada** y la columna **N° (col 1) es la
   única sin borde inferior grueso** en la fila de fin de clase.
 - Saneo al guardar oficiales: además de PivotTables, se eliminan las

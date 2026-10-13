@@ -307,7 +307,7 @@ def generate_cierre_excel(
             doc,
             cor,
             str(codigo_curso).strip().upper(),
-            f_envio_cert_str.upper(),
+            f_envio_cert_str,
             ano_val,
             semestre_val,
             1,  # Siempre 1 por cada estudiante aprobado

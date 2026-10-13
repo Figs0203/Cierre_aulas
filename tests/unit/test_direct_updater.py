@@ -286,6 +286,8 @@ class TestDirectUpdater(unittest.TestCase):
             self.assertEqual(ws_cert.cell(3, 7).value, "cperez@eafit.edu.co")
             self.assertEqual(ws_cert.cell(3, 8).value, "ABBUEI205")
             self.assertEqual(ws_cert.cell(3, 12).value, 1)
+            # Fecha de envío en minúsculas (mes abreviado), ej. '27-abr-2026'
+            self.assertEqual(ws_cert.cell(3, 9).value, "27-abr-2026")
             # La columna N° (1) es la ÚNICA sin borde inferior grueso en fin de clase.
             self.assertEqual(ws_cert.cell(3, 1).border.bottom.style, "thin")
             self.assertEqual(ws_cert.cell(3, 2).border.bottom.style, "medium")  # Borde fin de clase 5535
