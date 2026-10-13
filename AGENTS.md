@@ -45,6 +45,7 @@ python -m unittest discover -s tests -p "test_*.py" -v
 python tests/discovery/inspect_real_files.py --control "..." --sistematizacion "..." --notas "..." --certificados "..." --aula "ABBUEI154"
 
 # Diagnóstico de cruce de identidades (sin datos personales; útil si hay 0 matches)
+# También disponible en el menú de main.py como opción [7].
 python tests/discovery/diagnose_matching.py --control "..." --sistematizacion "..." --notas "..." --certificados "..." --aula "CMI120"
 ```
 
@@ -58,6 +59,7 @@ El menú de `main.py` (fuente de verdad; el README puede estar desactualizado):
 | 4 | Verificación de Arquitectura Offline |
 | 5 | Aplicar Cierre Directo en oficiales (con backup) |
 | 6 | Restaurar Último Backup |
+| 7 | Diagnóstico de Cruce de Identidades (sin datos personales) |
 
 ## 🧩 Arquitectura (módulos)
 

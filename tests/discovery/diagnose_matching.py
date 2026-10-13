@@ -27,6 +27,8 @@ Privacidad:
 from __future__ import annotations
 
 import argparse
+import contextlib
+import io
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -369,6 +371,78 @@ def cross_probe(notas_path: Path, sist_path: Path, aula: str) -> None:
     _section("SONDEO DE CRUCE NOTAS ↔ SISTEMATIZACIÓN", lines)
 
 
+def _run_all(file_paths: dict, aula: str) -> None:
+    """Ejecuta todas las inspecciones e imprime el informe completo."""
+    print("=" * 76)
+    print("DIAGNÓSTICO DE CRUCE — SIN DATOS PERSONALES (100% LOCAL)")
+    print(f"Fecha: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"Aula objetivo: {aula}")
+    print("=" * 76)
+
+    notas = Path(file_paths["notas"])
+    sist = Path(file_paths["sistematizacion"])
+    control = Path(file_paths["control_aulas"])
+    cert = Path(file_paths["certificados"]) if file_paths.get("certificados") else None
+
+    inspect_structure(notas, "NOTAS")
+    inspect_notas(notas)
+    inspect_sistematizacion(sist, aula)
+    inspect_control(control, aula)
+    if cert and cert.exists():
+        inspect_structure(cert, "CERTIFICADOS")
+    cross_probe(notas, sist, aula)
+
+    print("\n" + "=" * 76)
+    print("FIN DEL DIAGNÓSTICO. No contiene datos personales.")
+    print("=" * 76)
+
+
+class _Tee:
+    """Escribe simultáneamente en consola y en un archivo."""
+
+    def __init__(self, *streams):
+        self._streams = streams
+
+    def write(self, data):
+        for st in self._streams:
+            try:
+                st.write(data)
+            except Exception:  # noqa: BLE001
+                pass
+
+    def flush(self):
+        for st in self._streams:
+            try:
+                st.flush()
+            except Exception:  # noqa: BLE001
+                pass
+
+
+def run_diagnostico(file_paths: dict, aula: str, output_dir: Path | str | None = None) -> Path:
+    """Ejecuta el diagnóstico sobre los 4 archivos y guarda el informe en disco.
+
+    Args:
+        file_paths: {'control_aulas', 'sistematizacion', 'notas', 'certificados'}.
+        aula: Código del aula a analizar (ej. 'CMI120').
+        output_dir: Carpeta de salida (por defecto 'reports/').
+
+    Returns:
+        Ruta del informe generado.
+    """
+    out_dir = Path(output_dir) if output_dir else _PROJECT_ROOT / "reports"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    report_path = out_dir / f"diagnostico_matching_{ts}.txt"
+
+    original_stdout = sys.stdout
+    with open(report_path, "w", encoding="utf-8") as fh:
+        tee = _Tee(original_stdout, fh)
+        with contextlib.redirect_stdout(tee):
+            _run_all(file_paths, str(aula).strip())
+
+    return report_path
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Diagnóstico de cruce (sin datos personales)")
     parser.add_argument("--control", required=True)
@@ -376,30 +450,17 @@ def main() -> None:
     parser.add_argument("--notas", required=True)
     parser.add_argument("--certificados", required=False)
     parser.add_argument("--aula", required=True)
+    parser.add_argument("--output-dir", required=False)
     args = parser.parse_args()
 
-    control = Path(args.control)
-    sist = Path(args.sistematizacion)
-    notas = Path(args.notas)
-    cert = Path(args.certificados) if args.certificados else None
-
-    print("=" * 76)
-    print("DIAGNÓSTICO DE CRUCE — SIN DATOS PERSONALES (100% LOCAL)")
-    print(f"Fecha: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    print(f"Aula objetivo: {args.aula}")
-    print("=" * 76)
-
-    inspect_structure(notas, "NOTAS")
-    inspect_notas(notas)
-    inspect_sistematizacion(sist, args.aula)
-    inspect_control(control, args.aula)
-    if cert and cert.exists():
-        inspect_structure(cert, "CERTIFICADOS")
-    cross_probe(notas, sist, args.aula)
-
-    print("\n" + "=" * 76)
-    print("FIN DEL DIAGNÓSTICO. Puede compartir esta salida: NO contiene datos personales.")
-    print("=" * 76)
+    file_paths = {
+        "control_aulas": args.control,
+        "sistematizacion": args.sistematizacion,
+        "notas": args.notas,
+        "certificados": args.certificados,
+    }
+    report = run_diagnostico(file_paths, args.aula, output_dir=args.output_dir)
+    print(f"\n📄 Informe guardado en: {Path(report).resolve()}")
 
 
 if __name__ == "__main__":

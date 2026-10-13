@@ -31,6 +31,7 @@ from processing.cierre_orchestrator import run_cierre_pipeline
 from security.integrity import compute_sha256, verify_integrity
 from security.offline_check import check_offline_compliance
 from tests.discovery.inspect_real_files import run_discovery
+from tests.discovery.diagnose_matching import run_diagnostico
 
 
 def print_banner():
@@ -53,10 +54,11 @@ def show_menu() -> str:
     print("  [4] Verificación de Arquitectura Offline")
     print("  [5] Modo 5 — Aplicar Cierre Directo en Archivos Oficiales (Con Backup y Protección)")
     print("  [6] Modo 6 — Restaurar Último Backup en Archivos Oficiales")
+    print("  [7] Diagnóstico de Cruce de Identidades (Notas ↔ Sistematización, sin datos personales)")
     print("  [0] Salir")
     print("-" * 76)
     try:
-        choice = input("Seleccione una opción (0-6): ").strip()
+        choice = input("Seleccione una opción (0-7): ").strip()
         return choice
     except (EOFError, KeyboardInterrupt):
         return "0"
@@ -437,6 +439,42 @@ def handle_restore_backup_mode():
     print("=" * 76)
 
 
+def handle_diagnose_mode():
+    """Diagnóstico de cruce de identidades (sin datos personales)."""
+    print("\n" + "=" * 76)
+    print("DIAGNÓSTICO DE CRUCE DE IDENTIDADES (Notas ↔ Sistematización)")
+    print("=" * 76)
+    print("Analiza por qué los estudiantes no cruzan entre los archivos, mostrando:")
+    print("  • Estructura de cada archivo (hojas, encabezados, dimensiones).")
+    print("  • Columnas detectadas (identidad, módulos, nota final) y colores.")
+    print("  • Sondeo de coincidencias por documento, correo y nombre.")
+    print("🔒 Todos los datos personales se muestran enmascarados. 100% local.\n")
+
+    files = select_all_four_files(use_gui=True)
+
+    print("\n🔍 Ingrese el código del aula virtual a analizar (ej. CMI120):")
+    try:
+        target_aula = input("   Código de aula: ").strip()
+    except (EOFError, KeyboardInterrupt):
+        return
+    if not target_aula:
+        print("\n⚠️ Debe ingresar un código de aula válido.")
+        return
+
+    print("\n⏳ Analizando los archivos en memoria...\n")
+    try:
+        report_path = run_diagnostico(files, target_aula)
+    except Exception as e:  # noqa: BLE001
+        print(f"\n❌ Error durante el diagnóstico: {e}")
+        return
+
+    print("\n" + "=" * 76)
+    print("✅ DIAGNÓSTICO COMPLETADO")
+    print("=" * 76)
+    print("\n📄 El informe completo (sin datos personales) ha sido guardado en:")
+    print(f"   👉 {report_path.resolve()}")
+    print("\n💡 Puede compartir ese archivo: NO contiene documentos, correos ni nombres completos.")
+    print("=" * 76)
 
 
 def main():
@@ -457,11 +495,13 @@ def main():
             handle_direct_cierre_mode()
         elif choice == "6":
             handle_restore_backup_mode()
+        elif choice == "7":
+            handle_diagnose_mode()
         elif choice in ("0", "q", "salir", "exit"):
             print("\nSaliendo del asistente. ¡Hasta pronto!")
             sys.exit(0)
         else:
-            print("\n⚠️ Opción no válida. Por favor seleccione 0, 1, 2, 3, 4, 5 o 6.")
+            print("\n⚠️ Opción no válida. Por favor seleccione 0, 1, 2, 3, 4, 5, 6 o 7.")
 
 
 if __name__ == "__main__":
