@@ -222,7 +222,38 @@ _EXT_BLOCK_RE = re.compile(r"<ext\b[^>]*>.*?</ext>", re.DOTALL)
 # Atributo uri="..." de un <ext ...>
 _EXT_URI_RE = re.compile(r'<ext\b[^>]*\buri="([^"]+)"')
 # Declaración de namespace con prefijo: xmlns:prefijo="uri"
-_NS_DECL_RE = re.compile(r'\bxmlns:([A-Za-z_][\w.\-]*)\s*=\s*"([^"]+)"')
+_NS_DECL_RE = re.compile(r'\bxmlns:([A-Za-z_][\w.\-]*)\s*=\s*["\']([^"\']+)["\']')
+# Bloque <dataValidations>...</dataValidations> (listas de validación estándar).
+_DATA_VALIDATIONS_RE = re.compile(r"<dataValidations\b[^>]*>.*?</dataValidations>", re.DOTALL)
+
+# Elementos que, según el esquema CT_Worksheet, van DESPUÉS de <dataValidations>.
+_AFTER_DATA_VALIDATIONS = (
+    "<hyperlinks", "<printOptions", "<pageMargins", "<pageSetup", "<headerFooter",
+    "<rowBreaks", "<colBreaks", "<customProperties", "<cellWatches", "<ignoredErrors",
+    "<smartTags", "<drawing", "<legacyDrawing", "<legacyDrawingHF", "<picture",
+    "<oleObjects", "<controls", "<webPublishItems", "<tableParts", "<extLst",
+)
+
+
+def _replace_or_insert_block(sheet_xml: str, regex: "re.Pattern", block: str, after_tags) -> str:
+    """Reemplaza un bloque XML si existe, o lo inserta en la posición correcta del esquema.
+
+    Si el bloque no existe, se inserta antes del primero de `after_tags` (elementos
+    que van después según el esquema OOXML); si ninguno existe, antes de </worksheet>.
+    """
+    m = regex.search(sheet_xml)
+    if m:
+        return sheet_xml[:m.start()] + block + sheet_xml[m.end():]
+    pos = len(sheet_xml)
+    for tag in after_tags:
+        i = sheet_xml.find(tag)
+        if i != -1 and i < pos:
+            pos = i
+    if pos == len(sheet_xml):
+        i = sheet_xml.rfind("</worksheet>")
+        if i != -1:
+            pos = i
+    return sheet_xml[:pos] + block + sheet_xml[pos:]
 
 
 def _collect_ns_decls(xml: str) -> Dict[str, str]:
@@ -308,31 +339,34 @@ def _read_sheet_names_by_path(zf: "zipfile.ZipFile") -> Dict[str, str]:
     return mapping
 
 
-def _restore_sheet_extensions(
+def _restore_sheet_blocks(
     output_path: Path | str,
     source_path: Path | str,
-) -> int:
-    """Reinyecta las extensiones de hoja (`extLst`) del archivo original en el guardado.
+) -> tuple:
+    """Restaura en el archivo guardado las listas de validación y extensiones del original.
 
-    openpyxl descarta las extensiones `x14` (listas de validación modernas, formato
-    condicional moderno, etc.) al guardar. Esta función las recupera del archivo
-    original (que debe seguir intacto en disco) y las combina hoja por hoja en el
-    archivo recién guardado, preservando cualquier `<ext>` que openpyxl haya escrito.
+    openpyxl puede descartar al guardar:
+      - El bloque `<dataValidations>` (listas de validación de datos estándar).
+      - El bloque `<extLst>` (extensiones `x14`, p. ej. `x14:dataValidations`).
+
+    Esta función toma ambos bloques del archivo original (backup o el original aún
+    intacto) y los reinyecta hoja por hoja en el archivo recién guardado, respetando
+    el orden del esquema OOXML y declarando los namespaces necesarios.
 
     Args:
         output_path: Ruta del archivo ya guardado por openpyxl (se reescribe).
-        source_path: Ruta del archivo original con las extensiones (backup o el
-            original todavía sin sobrescribir).
+        source_path: Ruta del archivo original con las validaciones/extensiones.
 
     Returns:
-        Número de hojas a las que se les reinyectaron extensiones.
+        Tupla (n_hojas_dataValidations, n_hojas_extLst) restauradas.
     """
     output_path = Path(output_path)
     source_path = Path(source_path)
     if not output_path.exists() or not source_path.exists():
-        return 0
+        return (0, 0)
 
-    # Leer el archivo original y localizar las extensiones y namespaces por hoja
+    # Leer el archivo original: extraer bloques y namespaces por hoja
+    original_dv_by_sheet: Dict[str, str] = {}
     original_extlst_by_sheet: Dict[str, str] = {}
     original_ns_by_sheet: Dict[str, Dict[str, str]] = {}
     with zipfile.ZipFile(source_path, "r") as zf_src:
@@ -342,17 +376,19 @@ def _restore_sheet_extensions(
                 src_xml = zf_src.read(sheet_path).decode("utf-8", "ignore")
             except KeyError:
                 continue
-            m = _SHEET_EXTLST_RE.search(src_xml)
-            if not m:
+            dv_m = _DATA_VALIDATIONS_RE.search(src_xml)
+            ext_m = _SHEET_EXTLST_RE.search(src_xml)
+            if not dv_m and not ext_m:
                 continue
-            original_extlst_by_sheet[sheet_name] = m.group(0)
-            # Recolectar TODAS las declaraciones xmlns: del worksheet original
-            # (raíz, extLst y cualquier elemento intermedio). Así cualquier
-            # prefijo usado por el extLst queda cubierto al reinyectarlo.
+            if dv_m:
+                original_dv_by_sheet[sheet_name] = dv_m.group(0)
+            if ext_m:
+                original_extlst_by_sheet[sheet_name] = ext_m.group(0)
+            # Todas las declaraciones xmlns: del original (raíz, validaciones, extLst)
             original_ns_by_sheet[sheet_name] = _collect_ns_decls(src_xml)
 
-    if not original_extlst_by_sheet:
-        return 0
+    if not original_dv_by_sheet and not original_extlst_by_sheet:
+        return (0, 0)
 
     # Leer el archivo guardado, modificar las hojas y reescribir el zip
     with zipfile.ZipFile(output_path, "r") as zf_out:
@@ -361,31 +397,38 @@ def _restore_sheet_extensions(
 
     name_to_path_out = _read_sheet_names_by_path_dict(members)
 
-    restored = 0
-    for sheet_name, extlst in original_extlst_by_sheet.items():
+    restored_dv = 0
+    restored_ext = 0
+    for sheet_name in set(original_dv_by_sheet) | set(original_extlst_by_sheet):
         sheet_path = name_to_path_out.get(sheet_name)
         if not sheet_path or sheet_path not in members:
             continue
         xml = members[sheet_path].decode("utf-8", "ignore")
-
-        # Red de seguridad: si el extLst usa algún prefijo que no se puede resolver
-        # con las declaraciones del original, NO se inyecta (se prefiere perder el
-        # extLst antes que generar un libro corrupto).
+        new_xml = xml
         ns_decls = original_ns_by_sheet.get(sheet_name, {})
-        missing_prefixes = _prefixes_used(extlst) - set(ns_decls)
-        if missing_prefixes:
-            continue
 
-        new_xml = _merge_extlst_into_sheet_xml(xml, extlst)
-        if new_xml is not None and new_xml != xml:
-            # Asegurar que los prefijos usados por el extLst estén declarados en
-            # la raíz del worksheet (openpyxl no conserva esas declaraciones).
+        # 1) Listas de validación de datos estándar
+        dv_block = original_dv_by_sheet.get(sheet_name)
+        if dv_block:
+            candidate = _replace_or_insert_block(new_xml, _DATA_VALIDATIONS_RE, dv_block, _AFTER_DATA_VALIDATIONS)
+            if candidate != new_xml:
+                new_xml = candidate
+                restored_dv += 1
+
+        # 2) Extensiones de hoja (x14) — solo si sus prefijos son resolubles
+        ext_block = original_extlst_by_sheet.get(sheet_name)
+        if ext_block and not (_prefixes_used(ext_block) - set(ns_decls)):
+            candidate = _merge_extlst_into_sheet_xml(new_xml, ext_block)
+            if candidate is not None and candidate != new_xml:
+                new_xml = candidate
+                restored_ext += 1
+
+        if new_xml != xml:
             new_xml = _ensure_ns_decls(new_xml, ns_decls)
             members[sheet_path] = new_xml.encode("utf-8")
-            restored += 1
 
-    if restored == 0:
-        return 0
+    if restored_dv == 0 and restored_ext == 0:
+        return (0, 0)
 
     # Reescribir el zip preservando el orden original de las partes
     import tempfile as _tempfile
@@ -410,7 +453,7 @@ def _restore_sheet_extensions(
             except OSError:
                 pass
 
-    return restored
+    return restored_dv, restored_ext
 
 
 def _read_sheet_names_by_path_dict(members: Dict[str, bytes]) -> Dict[str, str]:
@@ -738,7 +781,7 @@ def apply_direct_cierre(
         wb_sist.close()
         # Preservar las extensiones de hoja (listas de validación x14, formato
         # condicional moderno, etc.) que openpyxl descarta al guardar.
-        _restore_sheet_extensions(path_sist, backup_by_role.get("sistematizacion", path_sist))
+        _restore_sheet_blocks(path_sist, backup_by_role.get("sistematizacion", path_sist))
     except Exception as e:
         report.errors.append(f"Error al actualizar Sistematización: {e}")
 
@@ -868,7 +911,7 @@ def apply_direct_cierre(
         wb_cert.save(path_cert)
         wb_cert.close()
         # Preservar las extensiones de hoja que openpyxl descarta al guardar.
-        _restore_sheet_extensions(path_cert, backup_by_role.get("certificados", path_cert))
+        _restore_sheet_blocks(path_cert, backup_by_role.get("certificados", path_cert))
     except Exception as e:
         report.errors.append(f"Error al anexar en Certificados: {e}")
 
@@ -924,7 +967,7 @@ def apply_direct_cierre(
         wb_ctrl.save(path_ctrl)
         wb_ctrl.close()
         # Preservar las extensiones de hoja que openpyxl descarta al guardar.
-        _restore_sheet_extensions(path_ctrl, backup_by_role.get("control_aulas", path_ctrl))
+        _restore_sheet_blocks(path_ctrl, backup_by_role.get("control_aulas", path_ctrl))
     except Exception as e:
         report.errors.append(f"Error al actualizar Control de Aulas: {e}")
 

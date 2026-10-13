@@ -147,15 +147,15 @@ oficiales de la biblioteca. Ajustes recientes (formato oficial):
   (`promedio_curso`) además de `Calculated Final`/`Nota Final`
   (`normalization/headers.py`).
 
-- **Preservación de listas de validación de datos**: openpyxl descarta las
-  extensiones de hoja (`extLst`), incluidas las listas modernas
-  `x14:dataValidations`. Tras guardar, `_restore_sheet_extensions` reinyecta el
-  `extLst` original (tomado del backup previo) hoja por hoja, fusionando por
-  `uri` para no duplicar. Además, `_ensure_ns_decls` copia a la raíz del
+- **Preservación de listas de validación de datos y fórmulas**: openpyxl puede
+  descartar al guardar tanto el bloque `<dataValidations>` (listas estándar) como
+  las extensiones de hoja (`extLst`, p. ej. `x14:dataValidations`). Tras guardar,
+  `_restore_sheet_blocks` reinyecta **ambos bloques** desde el backup previo,
+  respetando el orden del esquema OOXML (`dataValidations` antes de
+  `pageMargins`; `extLst` al final). `_ensure_ns_decls` copia a la raíz del
   worksheet guardado las declaraciones `xmlns:` del original (p. ej. `x14:`,
-  `xm:`), evitando el error de Excel "Prefijo no declarado". Si el `extLst` usa
-  un prefijo que no puede resolverse, **no se inyecta** (se prefiere perder el
-  extLst antes que generar un libro corrupto).
+  `xm:`), evitando el error de Excel "Prefijo no declarado". Las fórmulas del
+  archivo se conservan (solo se escriben celdas vacías).
 - El modo **7 (Diagnóstico)** incluye una **simulación completa del Modo 5**
   sobre copias (parsers, matcheo, saneo y escritura) que valida el XML de cada
   hoja resultante con expat y reporta el error exacto si lo hubiera.

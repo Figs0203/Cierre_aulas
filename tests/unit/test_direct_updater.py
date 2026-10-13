@@ -602,5 +602,59 @@ class TestDirectUpdater(unittest.TestCase):
             self.assertIn('xmlns:x14=', content)
 
 
+    def test_preserves_standard_data_validations_and_formulas(self):
+        """Las listas de validación estándar y las fórmulas del archivo no deben perderse."""
+        import zipfile as _zip
+        from openpyxl.worksheet.datavalidation import DataValidation
+        from output.direct_updater import apply_direct_cierre
+
+        with tempfile.TemporaryDirectory() as tmp_str:
+            tmpdir = Path(tmp_str)
+            files = self._create_mock_files(tmpdir)
+            path_sist = files["sistematizacion"]
+            sheet_key = "xl/worksheets/sheet1.xml"
+
+            # Agregar una lista de validación estándar y una fórmula
+            wb = openpyxl.load_workbook(path_sist)
+            ws = wb.active
+            dv = DataValidation(type="list", formula1='"SI,NO,No aplica"', allow_blank=True)
+            ws.add_data_validation(dv)
+            dv.add("M2:M50")
+            ws["U2"] = "=SUM(A2:B2)"
+            wb.save(path_sist)
+            wb.close()
+
+            # Verificar que existen antes
+            with _zip.ZipFile(path_sist) as z:
+                before = z.read(sheet_key).decode("utf-8", "ignore")
+            self.assertIn("<dataValidation ", before)
+            self.assertIn("<f>SUM(A2:B2)</f>", before)
+
+            col_map = {"nombres": 2, "apellidos": 3, "clase": 4, "documento": 5, "correo": 6,
+                       "promedio": 12, "estado_certificacion": 13}
+
+            def tv(val, col, row):
+                return TracedValue(val, "S", "Formato", col, 1, row)
+
+            es1 = EstudianteSistematizacion(
+                row_number=2, nombres=tv("carlos andres", "Nombres", 2),
+                apellidos=tv("perez gomez", "Apellidos", 2), clase=tv("5535", "Clase", 2),
+                documento=tv("1001", "Documento", 2), correo=tv("cperez@eafit.edu.co", "Correo", 2),
+                estado_calculado="Aprobó", column_indices=col_map,
+                raw_row_data={7: 5.0, 12: 4.8, 13: "Aprobó"},
+            )
+            m = StudentMatch(estudiante_sist=es1, estudiante_nota=EstudianteNotas(row_number=2),
+                             match_key="doc", match_value="1001")
+            res = AulaCierreResult(aula=AulaMetadata(), clases=[ClaseGroup(clase_id="5535", matches=[m])])
+
+            report = apply_direct_cierre(file_paths=files, result=res, codigo_curso="ABBUEI205", start_consecutivo=1)
+            self.assertTrue(report.is_successful, report.errors)
+
+            with _zip.ZipFile(path_sist) as z:
+                after = z.read(sheet_key).decode("utf-8", "ignore")
+            self.assertEqual(after.count("<dataValidation "), before.count("<dataValidation "))
+            self.assertIn("<f>SUM(A2:B2)</f>", after)
+
+
 if __name__ == "__main__":
     unittest.main()
