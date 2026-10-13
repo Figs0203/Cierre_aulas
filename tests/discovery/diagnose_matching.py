@@ -53,7 +53,6 @@ from normalization.text import (
 )
 from parsing.control_parser import parse_control_aulas
 from parsing.notas_parser import parse_notas_archivo, _select_notas_sheet
-from output.direct_updater import _restore_sheet_extensions
 from parsing.sistematizacion_parser import parse_sistematizacion_aula
 from security.privacy import mask_document, mask_email, mask_full_name
 
@@ -383,38 +382,64 @@ def _validate_xml_bytes(data: bytes) -> str:
         return f"ERROR: {e}"
 
 
-def simulate_save_xml(path: Path, label: str) -> None:
-    """Simula el guardado (openpyxl + restauración de extLst) y valida el XML de cada hoja.
+def simulate_full_cierre(file_paths: dict, aula: str) -> None:
+    """Simula el CIERRE COMPLETO (Modo 5) sobre COPIAS y valida el XML resultante.
 
-    Detecta exactamente el error de Excel ('Prefijo no declarado', XML mal formado,
-    etc.) sin modificar el archivo original ni exponer datos.
+    Es la prueba definitiva: replica exactamente lo que hace el Modo 5 (parsers,
+    matching, saneo de enlaces externos, escritura y restauración de extensiones)
+    y valida cada hoja del archivo resultante. Nunca toca los archivos reales.
     """
     import shutil
     import tempfile
     import zipfile
 
+    from output.direct_updater import apply_direct_cierre
+    from processing.cierre_orchestrator import run_cierre_pipeline
+
     lines = []
     tmp = Path(tempfile.mkdtemp())
     try:
-        src = tmp / path.name
-        shutil.copy2(path, src)
-        wb = openpyxl.load_workbook(src)
-        out = tmp / ("out_" + path.name)
-        wb.save(out)
-        wb.close()
-        n = _restore_sheet_extensions(out, src)
-        lines.append(f"Round-trip openpyxl OK. Extensiones (extLst) restauradas en {n} hoja(s).")
-        with zipfile.ZipFile(out) as z:
-            for name in z.namelist():
-                if name.startswith("xl/worksheets/") and name.endswith(".xml"):
-                    res = _validate_xml_bytes(z.read(name))
-                    flag = "✅" if res == "OK" else "❌"
-                    lines.append(f"  {flag} {name}: {res}")
+        copies = {}
+        for role, p in file_paths.items():
+            if not p:
+                continue
+            dst = tmp / Path(p).name
+            shutil.copy2(p, dst)
+            copies[role] = dst
+
+        result, _, _, _ = run_cierre_pipeline(
+            file_paths=copies, target_aula=aula, codigo_curso=aula, is_simulation=True
+        )
+        lines.append(f"Pipeline OK: {result.total_estudiantes} estudiantes, {result.total_matched} matches.")
+
+        report = apply_direct_cierre(
+            file_paths=copies, result=result, codigo_curso=aula,
+            metadatos_control=result.metadatos_control, start_consecutivo=result.start_consecutivo,
+        )
+        lines.append(f"Cierre simulado. Errores: {report.errors or 'ninguno'}")
+
+        for role in ("sistematizacion", "certificados", "control_aulas"):
+            p = copies.get(role)
+            if not p:
+                continue
+            bad = []
+            ok_count = 0
+            with zipfile.ZipFile(p) as z:
+                for name in z.namelist():
+                    if name.startswith("xl/worksheets/") and name.endswith(".xml"):
+                        res = _validate_xml_bytes(z.read(name))
+                        if res == "OK":
+                            ok_count += 1
+                        else:
+                            bad.append((name, res))
+            lines.append(f"  • {Path(p).name}: {ok_count} hojas OK" + ("" if not bad else f", {len(bad)} con ERROR"))
+            for name, res in bad:
+                lines.append(f"      ❌ {name}: {res}")
     except Exception as e:  # noqa: BLE001
-        lines.append(f"ERROR en la simulación: {e}")
+        lines.append(f"ERROR en la simulación completa: {e}")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
-    _section(f"SIMULACIÓN DE GUARDADO Y VALIDEZ XML — {label}", lines)
+    _section("SIMULACIÓN COMPLETA DEL CIERRE (Modo 5) Y VALIDEZ XML", lines)
 
 
 def _run_all(file_paths: dict, aula: str) -> None:
@@ -439,11 +464,8 @@ def _run_all(file_paths: dict, aula: str) -> None:
         inspect_structure(cert, "CERTIFICADOS")
     cross_probe(notas, sist, aula)
 
-    # Simulación de guardado: valida el XML de los archivos que el cierre modifica
-    simulate_save_xml(sist, "SISTEMATIZACIÓN")
-    simulate_save_xml(control, "CONTROL DE AULAS")
-    if cert and cert.exists():
-        simulate_save_xml(cert, "CERTIFICADOS")
+    # Prueba definitiva: simula el cierre completo (Modo 5) sobre copias y valida el XML
+    simulate_full_cierre(file_paths, aula)
 
     print("\n" + "=" * 76)
     print("FIN DEL DIAGNÓSTICO. No contiene datos personales.")

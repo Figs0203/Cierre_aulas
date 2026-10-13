@@ -156,9 +156,9 @@ oficiales de la biblioteca. Ajustes recientes (formato oficial):
   `xm:`), evitando el error de Excel "Prefijo no declarado". Si el `extLst` usa
   un prefijo que no puede resolverse, **no se inyecta** (se prefiere perder el
   extLst antes que generar un libro corrupto).
-- El modo **7 (Diagnóstico)** incluye una simulación de guardado (openpyxl +
-  restauración de extLst) que valida el XML de cada hoja con expat y reporta el
-  error exacto si lo hubiera.
+- El modo **7 (Diagnóstico)** incluye una **simulación completa del Modo 5**
+  sobre copias (parsers, matcheo, saneo y escritura) que valida el XML de cada
+  hoja resultante con expat y reporta el error exacto si lo hubiera.
 
 - **Selección automática de hoja en Notas**: si el archivo tiene varias hojas,
   se elige la que tenga columnas de módulos/nota final + identidad (p. ej.
