@@ -128,6 +128,30 @@ def print_identity_verification_summary(res: AulaCierreResult):
             print(f"     - Estudiante {nom}: {w}")
 
 
+def print_match_diagnostics(res: AulaCierreResult):
+    """Muestra ayuda cuando no hubo ningún cruce con Notas (0 matches)."""
+    if res.total_matched > 0:
+        return
+
+    notas = res.total_unmatched_notas
+    print("\n" + "!" * 76)
+    print("⚠️  DIAGNÓSTICO DE CRUCE: no se encontró ningún match con el archivo de Notas")
+    print("!" * 76)
+    print(f"   • Estudiantes en Sistematización: {res.total_estudiantes}")
+    print(f"   • Registros de Notas sin match: {notas}")
+    if notas == 0:
+        print("   ⚠️ El archivo de Notas no aportó ningún registro legible.")
+        print("      Verifique que la hoja seleccionada y las columnas de identidad sean correctas.")
+    else:
+        print("   ⚠️ Hay registros en Notas, pero sus identidades no coinciden con Sistematización")
+        print("      (documento, correo institucional o nombre+apellido).")
+    print("   💡 Para un análisis detallado (100% local y sin datos personales):")
+    print("      python tests/discovery/diagnose_matching.py \\")
+    print("        --control \"<Control_Aulas>.xlsx\" --sistematizacion \"<Sistematizacion>.xlsx\" \\")
+    print("        --notas \"<Notas>.xlsx\" --certificados \"<Certificados>.xlsx\" --aula <AULA>")
+    print("!" * 76)
+
+
 def handle_cierre_execution(is_simulation: bool = False):
     modo_nombre = "MODO 2: SIMULACIÓN PREVIA" if is_simulation else "MODO 3: GENERACIÓN DE ARCHIVO AUXILIAR DE CIERRE"
     print("\n" + "=" * 76)
@@ -189,6 +213,7 @@ def handle_cierre_execution(is_simulation: bool = False):
             print(f"    - ⚠️ Excluidos (Naranja): {len(cg.excluded_orange)}")
 
     print_identity_verification_summary(res)
+    print_match_diagnostics(res)
 
     print("\n🔒 Verificación de Integridad de los Archivos Oficiales:")
     for m in integrity_msgs:
@@ -289,6 +314,7 @@ def handle_direct_cierre_mode():
     print(f"\n  👉 Se anexarán {aprobados_total} certificados a la hoja oficial de Certificados.")
 
     print_identity_verification_summary(res)
+    print_match_diagnostics(res)
 
     print("\n" + "!" * 76)
     print("🛡️ GARANTÍAS DE SEGURIDAD Y RESPONSABILIDAD:")

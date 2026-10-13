@@ -43,6 +43,9 @@ python -m unittest discover -s tests -p "test_*.py" -v
 
 # Inspectores de descubrimiento directo (Fase 0) sobre archivos reales
 python tests/discovery/inspect_real_files.py --control "..." --sistematizacion "..." --notas "..." --certificados "..." --aula "ABBUEI154"
+
+# Diagnóstico de cruce de identidades (sin datos personales; útil si hay 0 matches)
+python tests/discovery/diagnose_matching.py --control "..." --sistematizacion "..." --notas "..." --certificados "..." --aula "CMI120"
 ```
 
 El menú de `main.py` (fuente de verdad; el README puede estar desactualizado):
