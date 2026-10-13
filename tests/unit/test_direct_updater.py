@@ -539,5 +539,68 @@ class TestDirectUpdater(unittest.TestCase):
         self.assertEqual(out2.count('uri="{AAA}"'), 1)
 
 
+    def test_preserves_extlst_prefixes_declared_on_root(self):
+        """Si el extLst usa prefijos declarados solo en la raíz del worksheet original,
+        las declaraciones deben copiarse a la raíz guardada (sin 'Prefijo no declarado')."""
+        import zipfile as _zip
+        from xml.etree import ElementTree as _ET
+        from output.direct_updater import apply_direct_cierre
+
+        with tempfile.TemporaryDirectory() as tmp_str:
+            tmpdir = Path(tmp_str)
+            files = self._create_mock_files(tmpdir)
+            path_sist = files["sistematizacion"]
+            sheet_key = "xl/worksheets/sheet1.xml"
+
+            with _zip.ZipFile(path_sist) as z:
+                members = {n: z.read(n) for n in z.namelist()}
+            xml = members[sheet_key].decode("utf-8")
+            # Declarar x14/xm en la RAÍZ (no inline en <ext>)
+            xml = xml.replace(
+                '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"',
+                '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+                'xmlns:x14="http://schemas.microsoft.com/office/spreadsheetml/2009/9/main" '
+                'xmlns:xm="http://schemas.microsoft.com/office/excel/2006/main"',
+            )
+            ext = (
+                '<extLst><ext uri="{CCE6A557-97BC-4b89-ADB6-D9C93CAAB3DF}">'
+                '<x14:dataValidations count="1"><x14:dataValidation type="list">'
+                '<x14:formula1><xm:f>Cat!$A$1:$A$3</xm:f></x14:formula1>'
+                '<xm:sqref>N2:N10</xm:sqref></x14:dataValidation></x14:dataValidations>'
+                '</ext></extLst>'
+            )
+            members[sheet_key] = xml.replace("</worksheet>", ext + "</worksheet>").encode("utf-8")
+            with _zip.ZipFile(path_sist, "w", _zip.ZIP_DEFLATED) as zo:
+                for n, d in members.items():
+                    zo.writestr(n, d)
+
+            col_map = {"nombres": 2, "apellidos": 3, "clase": 4, "documento": 5, "correo": 6,
+                       "promedio": 12, "estado_certificacion": 13}
+
+            def tv(val, col, row):
+                return TracedValue(val, "S", "Formato", col, 1, row)
+
+            es1 = EstudianteSistematizacion(
+                row_number=2, nombres=tv("carlos andres", "Nombres", 2),
+                apellidos=tv("perez gomez", "Apellidos", 2), clase=tv("5535", "Clase", 2),
+                documento=tv("1001", "Documento", 2), correo=tv("cperez@eafit.edu.co", "Correo", 2),
+                estado_calculado="Aprobó", column_indices=col_map,
+                raw_row_data={7: 5.0, 12: 4.8, 13: "Aprobó"},
+            )
+            m = StudentMatch(estudiante_sist=es1, estudiante_nota=EstudianteNotas(row_number=2),
+                             match_key="doc", match_value="1001")
+            res = AulaCierreResult(aula=AulaMetadata(), clases=[ClaseGroup(clase_id="5535", matches=[m])])
+
+            report = apply_direct_cierre(file_paths=files, result=res, codigo_curso="ABBUEI205", start_consecutivo=1)
+            self.assertTrue(report.is_successful, report.errors)
+
+            with _zip.ZipFile(path_sist) as z:
+                content = z.read(sheet_key).decode("utf-8", "ignore")
+            # El XML debe ser válido (sin prefijos sin declarar)
+            _ET.fromstring(content)  # lanza ParseError si hay 'unbound prefix'
+            self.assertIn("x14:dataValidations", content)
+            self.assertIn('xmlns:x14=', content)
+
+
 if __name__ == "__main__":
     unittest.main()

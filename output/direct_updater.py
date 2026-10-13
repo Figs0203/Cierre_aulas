@@ -221,6 +221,35 @@ _SHEET_EXTLST_RE = re.compile(r"<extLst\b[^>]*>.*?</extLst>", re.DOTALL)
 _EXT_BLOCK_RE = re.compile(r"<ext\b[^>]*>.*?</ext>", re.DOTALL)
 # Atributo uri="..." de un <ext ...>
 _EXT_URI_RE = re.compile(r'<ext\b[^>]*\buri="([^"]+)"')
+# Declaración de namespace con prefijo: xmlns:prefijo="uri"
+_NS_DECL_RE = re.compile(r'\bxmlns:([A-Za-z_][\w.\-]*)\s*=\s*"([^"]+)"')
+
+
+def _collect_ns_decls(xml: str) -> Dict[str, str]:
+    """Recolecta las declaraciones {prefijo: uri} de un fragmento XML."""
+    return {m.group(1): m.group(2) for m in _NS_DECL_RE.finditer(xml)}
+
+
+def _ensure_ns_decls(sheet_xml: str, ns_decls: Dict[str, str]) -> str:
+    """Agrega a la etiqueta <worksheet> las declaraciones de namespace faltantes.
+
+    Necesario cuando el `extLst` reinyectado usa prefijos (p. ej. `x14:`, `xm:`)
+    declarados en la raíz del worksheet original, que openpyxl no conserva. Sin
+    esto, Excel reporta "Prefijo no declarado".
+    """
+    if not ns_decls:
+        return sheet_xml
+    m = re.match(r"<worksheet\b[^>]*>", sheet_xml)
+    if not m:
+        return sheet_xml
+    root_tag = m.group(0)
+    existing = _collect_ns_decls(root_tag)
+    missing = {p: u for p, u in ns_decls.items() if p not in existing}
+    if not missing:
+        return sheet_xml
+    decls = "".join(f' xmlns:{p}="{u}"' for p, u in missing.items())
+    new_tag = root_tag[:-1] + decls + ">"
+    return sheet_xml.replace(root_tag, new_tag, 1)
 
 
 def _read_sheet_names_by_path(zf: "zipfile.ZipFile") -> Dict[str, str]:
@@ -265,16 +294,6 @@ def _read_sheet_names_by_path(zf: "zipfile.ZipFile") -> Dict[str, str]:
     return mapping
 
 
-def _extract_sheet_extlst(zf: "zipfile.ZipFile", sheet_path: str) -> Optional[str]:
-    """Extrae el bloque <extLst>...</extLst> del XML de una hoja, o None si no existe."""
-    try:
-        xml = zf.read(sheet_path).decode("utf-8", "ignore")
-    except KeyError:
-        return None
-    m = _SHEET_EXTLST_RE.search(xml)
-    return m.group(0) if m else None
-
-
 def _restore_sheet_extensions(
     output_path: Path | str,
     source_path: Path | str,
@@ -299,14 +318,26 @@ def _restore_sheet_extensions(
     if not output_path.exists() or not source_path.exists():
         return 0
 
-    # Leer el archivo original y localizar las extensiones por hoja
+    # Leer el archivo original y localizar las extensiones y namespaces por hoja
     original_extlst_by_sheet: Dict[str, str] = {}
+    original_ns_by_sheet: Dict[str, Dict[str, str]] = {}
     with zipfile.ZipFile(source_path, "r") as zf_src:
         name_to_path = _read_sheet_names_by_path(zf_src)
         for sheet_name, sheet_path in name_to_path.items():
-            extlst = _extract_sheet_extlst(zf_src, sheet_path)
-            if extlst:
-                original_extlst_by_sheet[sheet_name] = extlst
+            try:
+                src_xml = zf_src.read(sheet_path).decode("utf-8", "ignore")
+            except KeyError:
+                continue
+            m = _SHEET_EXTLST_RE.search(src_xml)
+            if not m:
+                continue
+            original_extlst_by_sheet[sheet_name] = m.group(0)
+            root_match = re.match(r"<worksheet\b[^>]*>", src_xml)
+            ns_decls = _collect_ns_decls(root_match.group(0)) if root_match else {}
+            # Incluir namespaces declarados en el propio <extLst> (se pierden al
+            # fusionar solo los <ext>), y en general en el bloque de extensión.
+            ns_decls.update(_collect_ns_decls(m.group(0)))
+            original_ns_by_sheet[sheet_name] = ns_decls
 
     if not original_extlst_by_sheet:
         return 0
@@ -326,6 +357,9 @@ def _restore_sheet_extensions(
         xml = members[sheet_path].decode("utf-8", "ignore")
         new_xml = _merge_extlst_into_sheet_xml(xml, extlst)
         if new_xml is not None and new_xml != xml:
+            # Asegurar que los prefijos usados por el extLst estén declarados en
+            # la raíz del worksheet (openpyxl no conserva esas declaraciones).
+            new_xml = _ensure_ns_decls(new_xml, original_ns_by_sheet.get(sheet_name, {}))
             members[sheet_path] = new_xml.encode("utf-8")
             restored += 1
 

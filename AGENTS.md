@@ -151,8 +151,9 @@ oficiales de la biblioteca. Ajustes recientes (formato oficial):
   extensiones de hoja (`extLst`), incluidas las listas modernas
   `x14:dataValidations`. Tras guardar, `_restore_sheet_extensions` reinyecta el
   `extLst` original (tomado del backup previo) hoja por hoja, fusionando por
-  `uri` para no duplicar. Así las listas desplegables no se pierden en cada
-  automatización.
+  `uri` para no duplicar. Además, `_ensure_ns_decls` copia a la raíz del
+  worksheet guardado las declaraciones `xmlns:` del original (p. ej. `x14:`,
+  `xm:`), evitando el error de Excel "Prefijo no declarado".
 
 - **Selección automática de hoja en Notas**: si el archivo tiene varias hojas,
   se elige la que tenga columnas de módulos/nota final + identidad (p. ej.
