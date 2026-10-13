@@ -153,7 +153,12 @@ oficiales de la biblioteca. Ajustes recientes (formato oficial):
   `extLst` original (tomado del backup previo) hoja por hoja, fusionando por
   `uri` para no duplicar. Además, `_ensure_ns_decls` copia a la raíz del
   worksheet guardado las declaraciones `xmlns:` del original (p. ej. `x14:`,
-  `xm:`), evitando el error de Excel "Prefijo no declarado".
+  `xm:`), evitando el error de Excel "Prefijo no declarado". Si el `extLst` usa
+  un prefijo que no puede resolverse, **no se inyecta** (se prefiere perder el
+  extLst antes que generar un libro corrupto).
+- El modo **7 (Diagnóstico)** incluye una simulación de guardado (openpyxl +
+  restauración de extLst) que valida el XML de cada hoja con expat y reporta el
+  error exacto si lo hubiera.
 
 - **Selección automática de hoja en Notas**: si el archivo tiene varias hojas,
   se elige la que tenga columnas de módulos/nota final + identidad (p. ej.

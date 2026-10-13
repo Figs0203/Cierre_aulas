@@ -53,6 +53,7 @@ from normalization.text import (
 )
 from parsing.control_parser import parse_control_aulas
 from parsing.notas_parser import parse_notas_archivo, _select_notas_sheet
+from output.direct_updater import _restore_sheet_extensions
 from parsing.sistematizacion_parser import parse_sistematizacion_aula
 from security.privacy import mask_document, mask_email, mask_full_name
 
@@ -370,6 +371,52 @@ def cross_probe(notas_path: Path, sist_path: Path, aula: str) -> None:
     _section("SONDEO DE CRUCE NOTAS ↔ SISTEMATIZACIÓN", lines)
 
 
+def _validate_xml_bytes(data: bytes) -> str:
+    """Valida XML con expat (streaming) y detecta prefijos de namespace sin declarar."""
+    from xml.parsers import expat
+
+    parser = expat.ParserCreate(namespace_separator="|")
+    try:
+        parser.Parse(data, True)
+        return "OK"
+    except expat.ExpatError as e:
+        return f"ERROR: {e}"
+
+
+def simulate_save_xml(path: Path, label: str) -> None:
+    """Simula el guardado (openpyxl + restauración de extLst) y valida el XML de cada hoja.
+
+    Detecta exactamente el error de Excel ('Prefijo no declarado', XML mal formado,
+    etc.) sin modificar el archivo original ni exponer datos.
+    """
+    import shutil
+    import tempfile
+    import zipfile
+
+    lines = []
+    tmp = Path(tempfile.mkdtemp())
+    try:
+        src = tmp / path.name
+        shutil.copy2(path, src)
+        wb = openpyxl.load_workbook(src)
+        out = tmp / ("out_" + path.name)
+        wb.save(out)
+        wb.close()
+        n = _restore_sheet_extensions(out, src)
+        lines.append(f"Round-trip openpyxl OK. Extensiones (extLst) restauradas en {n} hoja(s).")
+        with zipfile.ZipFile(out) as z:
+            for name in z.namelist():
+                if name.startswith("xl/worksheets/") and name.endswith(".xml"):
+                    res = _validate_xml_bytes(z.read(name))
+                    flag = "✅" if res == "OK" else "❌"
+                    lines.append(f"  {flag} {name}: {res}")
+    except Exception as e:  # noqa: BLE001
+        lines.append(f"ERROR en la simulación: {e}")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    _section(f"SIMULACIÓN DE GUARDADO Y VALIDEZ XML — {label}", lines)
+
+
 def _run_all(file_paths: dict, aula: str) -> None:
     """Ejecuta todas las inspecciones e imprime el informe completo."""
     print("=" * 76)
@@ -391,6 +438,12 @@ def _run_all(file_paths: dict, aula: str) -> None:
     if cert and cert.exists():
         inspect_structure(cert, "CERTIFICADOS")
     cross_probe(notas, sist, aula)
+
+    # Simulación de guardado: valida el XML de los archivos que el cierre modifica
+    simulate_save_xml(sist, "SISTEMATIZACIÓN")
+    simulate_save_xml(control, "CONTROL DE AULAS")
+    if cert and cert.exists():
+        simulate_save_xml(cert, "CERTIFICADOS")
 
     print("\n" + "=" * 76)
     print("FIN DEL DIAGNÓSTICO. No contiene datos personales.")

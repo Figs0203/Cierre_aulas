@@ -230,6 +230,20 @@ def _collect_ns_decls(xml: str) -> Dict[str, str]:
     return {m.group(1): m.group(2) for m in _NS_DECL_RE.finditer(xml)}
 
 
+# Prefijos usados en nombres de elementos (<x14:foo>) y atributos (attr:foo="...").
+# Se exige una letra tras ':' para no confundir URIs (p. ej. "http://").
+_ELEM_PREFIX_RE = re.compile(r"</?([A-Za-z_][\w.\-]*):[A-Za-z_]")
+_ATTR_PREFIX_RE = re.compile(r"\s([A-Za-z_][\w.\-]*):[A-Za-z_]")
+
+
+def _prefixes_used(xml: str) -> set:
+    """Devuelve el conjunto de prefijos de namespace usados en un fragmento XML."""
+    prefixes = {m.group(1) for m in _ELEM_PREFIX_RE.finditer(xml)}
+    prefixes |= {m.group(1) for m in _ATTR_PREFIX_RE.finditer(xml)}
+    prefixes.discard("xmlns")
+    return prefixes
+
+
 def _ensure_ns_decls(sheet_xml: str, ns_decls: Dict[str, str]) -> str:
     """Agrega a la etiqueta <worksheet> las declaraciones de namespace faltantes.
 
@@ -239,7 +253,7 @@ def _ensure_ns_decls(sheet_xml: str, ns_decls: Dict[str, str]) -> str:
     """
     if not ns_decls:
         return sheet_xml
-    m = re.match(r"<worksheet\b[^>]*>", sheet_xml)
+    m = re.search(r"<worksheet\b[^>]*>", sheet_xml)
     if not m:
         return sheet_xml
     root_tag = m.group(0)
@@ -332,12 +346,10 @@ def _restore_sheet_extensions(
             if not m:
                 continue
             original_extlst_by_sheet[sheet_name] = m.group(0)
-            root_match = re.match(r"<worksheet\b[^>]*>", src_xml)
-            ns_decls = _collect_ns_decls(root_match.group(0)) if root_match else {}
-            # Incluir namespaces declarados en el propio <extLst> (se pierden al
-            # fusionar solo los <ext>), y en general en el bloque de extensión.
-            ns_decls.update(_collect_ns_decls(m.group(0)))
-            original_ns_by_sheet[sheet_name] = ns_decls
+            # Recolectar TODAS las declaraciones xmlns: del worksheet original
+            # (raíz, extLst y cualquier elemento intermedio). Así cualquier
+            # prefijo usado por el extLst queda cubierto al reinyectarlo.
+            original_ns_by_sheet[sheet_name] = _collect_ns_decls(src_xml)
 
     if not original_extlst_by_sheet:
         return 0
@@ -355,11 +367,20 @@ def _restore_sheet_extensions(
         if not sheet_path or sheet_path not in members:
             continue
         xml = members[sheet_path].decode("utf-8", "ignore")
+
+        # Red de seguridad: si el extLst usa algún prefijo que no se puede resolver
+        # con las declaraciones del original, NO se inyecta (se prefiere perder el
+        # extLst antes que generar un libro corrupto).
+        ns_decls = original_ns_by_sheet.get(sheet_name, {})
+        missing_prefixes = _prefixes_used(extlst) - set(ns_decls)
+        if missing_prefixes:
+            continue
+
         new_xml = _merge_extlst_into_sheet_xml(xml, extlst)
         if new_xml is not None and new_xml != xml:
             # Asegurar que los prefijos usados por el extLst estén declarados en
             # la raíz del worksheet (openpyxl no conserva esas declaraciones).
-            new_xml = _ensure_ns_decls(new_xml, original_ns_by_sheet.get(sheet_name, {}))
+            new_xml = _ensure_ns_decls(new_xml, ns_decls)
             members[sheet_path] = new_xml.encode("utf-8")
             restored += 1
 
