@@ -90,14 +90,14 @@ TOTAL_CERTIFICADOS_DEFAULT = 1
 # ============================================================
 
 # [CONFIRMADO] Formato de la columna Ciclo en Certificados:
-# "CLASE {clase} {catalogo} - {programa} - {mes_inicio} {dia_inicio} A {mes_fin} {dia_fin}"
-# Ejemplo: "CLASE 5535 MF7001 - M. ESTUDIOS JURÍDICOS - MARZO 16 A ABRIL 27"
-CICLO_FORMAT = "CLASE {clase} {catalogo} - {programa} - {mes_inicio} {dia_inicio} A {mes_fin} {dia_fin}"
+# "CLASE {clase} - {catalogo} - {programa} - {mes_inicio} {dia_inicio} A {mes_fin} {dia_fin}"
+# Ejemplo: "CLASE 2216 - PD1002 - M. ESTUDIOS JURÍDICOS - MARZO 16 A ABRIL 27"
+CICLO_FORMAT = "CLASE {clase} - {catalogo} - {programa} - {mes_inicio} {dia_inicio} A {mes_fin} {dia_fin}"
 
 # [CONFIRMADO] Formato de la columna Docente COIN en Certificados:
-# "{codigo_guion} {nombre_formador}"
-# Ejemplo: "ABBUEI-205 Manuela Restrepo"
-DOCENTE_COIN_FORMAT = "{codigo_guion} {nombre_formador}"
+# "({codigo_guion}) {nombre_formador}"
+# Ejemplo: "(ABBUEI-205) Manuela Restrepo"
+DOCENTE_COIN_FORMAT = "({codigo_guion}) {nombre_formador}"
 
 # Meses en español en mayúsculas para el formato de Ciclo
 MESES_ES_MAYUSCULAS = {

@@ -2,8 +2,8 @@
 Tests unitarios para las funciones de formateo de columnas de salida.
 
 Cubre las Reglas 5 y 6 confirmadas el 2026-09-04:
-  - Regla 5: Columna 'Docente COIN' = '{CÓDIGO-CON-GUIÓN} {NOMBRE_FORMADOR}'
-  - Regla 6: Columna 'Ciclo' = 'CLASE {N} {CAT} - {PROG} - {F_INI} A {F_FIN}'
+  - Regla 5: Columna 'Docente COIN' = '({CÓDIGO-CON-GUIÓN}) {NOMBRE_FORMADOR}'
+  - Regla 6: Columna 'Ciclo' = 'CLASE {N} - {CAT} - {PROG} - {F_INI} A {F_FIN}'
 
 También cubre la lista de hojas confirmada (Regla 1) y la
 función de fecha para Ciclo: format_ciclo_date().
@@ -132,15 +132,15 @@ class TestFormatDocenteCOIN:
 
     def test_caso_confirmado(self):
         result = format_docente_coin("ABBUEI205", "Manuela Restrepo")
-        assert result == "ABBUEI-205 Manuela Restrepo"
+        assert result == "(ABBUEI-205) Manuela Restrepo"
 
     def test_codigo_ya_tiene_guion(self):
         result = format_docente_coin("ABBUEI-205", "Manuela Restrepo")
-        assert result == "ABBUEI-205 Manuela Restrepo"
+        assert result == "(ABBUEI-205) Manuela Restrepo"
 
     def test_codigo_cmi(self):
         result = format_docente_coin("CMI154", "Carlos Pérez")
-        assert result == "CMI-154 Carlos Pérez"
+        assert result == "(CMI-154) Carlos Pérez"
 
     def test_none_codigo_retorna_vacio(self):
         assert format_docente_coin(None, "Carlos Pérez") == ""
@@ -174,7 +174,7 @@ class TestFormatCiclo:
             fecha_inicio_str="MARZO 16",
             fecha_fin_str="ABRIL 27",
         )
-        assert result == "CLASE 5535 MF7001 - M. ESTUDIOS JURÍDICOS - MARZO 16 A ABRIL 27"
+        assert result == "CLASE 5535 - MF7001 - M. ESTUDIOS JURÍDICOS - MARZO 16 A ABRIL 27"
 
     def test_clase_como_string(self):
         result = format_ciclo(
@@ -184,7 +184,7 @@ class TestFormatCiclo:
             fecha_inicio_str="MARZO 16",
             fecha_fin_str="ABRIL 27",
         )
-        assert result == "CLASE 5535 MF7001 - M. ESTUDIOS JURÍDICOS - MARZO 16 A ABRIL 27"
+        assert result == "CLASE 5535 - MF7001 - M. ESTUDIOS JURÍDICOS - MARZO 16 A ABRIL 27"
 
     def test_none_clase_retorna_vacio(self):
         assert format_ciclo(None, "MF7001", "PROG", "MARZO 16", "ABRIL 27") == ""
@@ -229,7 +229,7 @@ class TestFlujoCombinadoCertificado:
         f_inicio = format_ciclo_date(date(2026, 3, 16))
         f_fin = format_ciclo_date(date(2026, 4, 27))
         ciclo = format_ciclo(5535, "MF7001", "M. ESTUDIOS JURÍDICOS", f_inicio, f_fin)
-        assert ciclo == "CLASE 5535 MF7001 - M. ESTUDIOS JURÍDICOS - MARZO 16 A ABRIL 27"
+        assert ciclo == "CLASE 5535 - MF7001 - M. ESTUDIOS JURÍDICOS - MARZO 16 A ABRIL 27"
 
     def test_docente_y_ciclo_con_datos_faltantes_producen_vacio(self):
         """Si el formador no se puede extraer del archivo, ningún campo se llena."""
@@ -374,7 +374,7 @@ class TestFormatoFeedbackAjustes:
 
         # Fila 2 (es1, fin de clase 5535) debe tener Docente COIN en MAYÚSCULAS
         docente_coin = ws_cert.cell(2, 3).value
-        assert docente_coin == "ABBUEI-205 MANUELA RESTREPO"
+        assert docente_coin == "(ABBUEI-205) MANUELA RESTREPO"
         assert docente_coin.isupper()
 
         # Fila 2 debe tener borde inferior 'medium' en columnas != N° porque es fin de clase 5535

@@ -116,6 +116,11 @@ oficiales de la biblioteca. Ajustes recientes (formato oficial):
 - Regla de semestre: S1 = 1 nov → 30 abr; S2 = 1 may → 31 oct
   (`extract_semester`).
 - Fuente de la tabla de Certificados: **Zurich Cn BT, tamaño 11**.
+- Formato de la columna **Ciclo**: `CLASE {clase} - {catálogo} - {programa} - {MES DÍA} A {MES DÍA}`
+  (guion entre clase y catálogo), p. ej. `CLASE 2216 - PD1002 - ...`.
+- Formato de la columna **Docente COIN**: `({CÓDIGO-CON-GUIÓN}) {NOMBRE}`,
+  p. ej. `(CMI-120) NOMBRE` (`normalization/text.py:format_docente_coin`,
+  `format_ciclo`).
 - Certificados: **toda la información centrada** y la columna **N° (col 1) es la
   única sin borde inferior grueso** en la fila de fin de clase.
 - Saneo al guardar oficiales: además de PivotTables, se eliminan las

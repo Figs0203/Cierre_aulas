@@ -280,7 +280,7 @@ class TestDirectUpdater(unittest.TestCase):
 
             # Fila 3 anexada para Carlos Andrés (N° = 11 correlativo)
             self.assertEqual(ws_cert.cell(3, 1).value, 11)
-            self.assertEqual(ws_cert.cell(3, 3).value, "ABBUEI-205 MANUELA RESTREPO")
+            self.assertEqual(ws_cert.cell(3, 3).value, "(ABBUEI-205) MANUELA RESTREPO")
             self.assertEqual(ws_cert.cell(3, 4).value, "CARLOS ANDRES")
             self.assertEqual(ws_cert.cell(3, 5).value, "PEREZ GOMEZ")
             self.assertEqual(ws_cert.cell(3, 7).value, "cperez@eafit.edu.co")

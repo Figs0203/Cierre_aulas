@@ -252,9 +252,9 @@ def format_codigo_con_guion(codigo_curso: str) -> str:
 def format_docente_coin(codigo_curso: str | None, nombre_formador: str | None) -> str:
     """Genera el valor de la columna 'Docente COIN' para el archivo de Certificados.
 
-    Formato confirmado por el monitor (Regla 5, 2026-09-04):
-        '{CÓDIGO-CON-GUIÓN} {NOMBRE_FORMADOR}'
-        Ejemplo: 'ABBUEI-205 Manuela Restrepo'
+    Formato oficial confirmado:
+        '({CÓDIGO-CON-GUIÓN}) {NOMBRE_FORMADOR}'
+        Ejemplo: '(ABBUEI-205) Manuela Restrepo'
 
     Si alguno de los dos campos es None o vacío, retorna '' (nunca rellena con datos ficticios).
 
@@ -271,7 +271,7 @@ def format_docente_coin(codigo_curso: str | None, nombre_formador: str | None) -
     nombre = nombre_formador.strip()
     if not codigo_guion or not nombre:
         return ""
-    return f"{codigo_guion} {nombre}"
+    return f"({codigo_guion}) {nombre}"
 
 
 def format_ciclo(
@@ -283,9 +283,9 @@ def format_ciclo(
 ) -> str:
     """Genera el valor de la columna 'Ciclo' para el archivo de Certificados.
 
-    Formato confirmado por el monitor (Regla 6, 2026-09-04):
-        'CLASE {clase} {catalogo} - {programa} - {mes_inicio} {dia_inicio} A {mes_fin} {dia_fin}'
-        Ejemplo: 'CLASE 5535 MF7001 - M. ESTUDIOS JURÍDICOS - MARZO 16 A ABRIL 27'
+    Formato oficial confirmado:
+        'CLASE {clase} - {catalogo} - {programa} - {mes_inicio} {dia_inicio} A {mes_fin} {dia_fin}'
+        Ejemplo: 'CLASE 2216 - PD1002 - M. ESTUDIOS JURÍDICOS - MARZO 16 A ABRIL 27'
 
     Las fechas se reciben como cadenas ya formateadas en estilo 'MARZO 16',
     producidas por normalization.dates.format_ciclo_date().
@@ -305,7 +305,7 @@ def format_ciclo(
     if any(v is None or str(v).strip() == "" for v in [clase, catalogo, programa, fecha_inicio_str, fecha_fin_str]):
         return ""
     return (
-        f"CLASE {clase} {str(catalogo).strip()} - "
+        f"CLASE {clase} - {str(catalogo).strip()} - "
         f"{str(programa).strip()} - "
         f"{str(fecha_inicio_str).strip()} A {str(fecha_fin_str).strip()}"
     )
