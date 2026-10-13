@@ -147,10 +147,16 @@ oficiales de la biblioteca. Ajustes recientes (formato oficial):
   `uri` para no duplicar. Así las listas desplegables no se pierden en cada
   automatización.
 
+- **Selección automática de hoja en Notas**: si el archivo tiene varias hojas,
+  se elige la que tenga columnas de módulos/nota final + identidad (p. ej.
+  'CURSO REALIZADO'), en lugar de asumir 'Calificaciones' por nombre. Caso real
+  CMI: 'Calificaciones' traía solo identidad y sección de otro curso, y las notas
+  reales estaban en 'CURSO REALIZADO' — `parsing/notas_parser.py:_select_notas_sheet`.
+
 > Nota: el color de borde de las tablas escritas se fijó en negro para que sea
 > visible y consistente. Si el documento oficial usa otro color, se cambia en la
 > constante `_BORDER_COLOR` de `output/direct_updater.py` y
 > `output/excel_generator.py`.
 
-Última verificación: 42 tests OK. El grafo de conocimiento se regenera con
+Última verificación: 43 tests OK. El grafo de conocimiento se regenera con
 `graphify update .` tras cada cambio de código.

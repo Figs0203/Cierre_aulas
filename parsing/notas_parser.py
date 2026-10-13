@@ -109,6 +109,68 @@ def parse_seccion_info(seccion_str: str | None) -> Tuple[str | None, str | None]
     return None, clean
 
 
+def _count_identity_headers(headers: List[Optional[str]]) -> int:
+    """Cuenta cuántos encabezados corresponden a columnas de identidad del estudiante."""
+    count = 0
+    for h in headers:
+        if not h:
+            continue
+        hl = str(h).lower()
+        if (
+            "orgdefinedid" in hl or "username" in hl
+            or "last name" in hl or "first name" in hl
+            or "apellidos" in hl or "nombres" in hl
+        ):
+            count += 1
+    return count
+
+
+def _select_notas_sheet(wb) -> str:
+    """Elige la hoja de Notas más adecuada del libro.
+
+    Algunos archivos traen varias hojas: una con el listado general de la
+    plataforma (solo identidad, sin calificaciones) y otra con las
+    calificaciones reales del aula (p. ej. 'CURSO REALIZADO'). Se elige la hoja
+    que tenga columnas de módulos/nota final Y columnas de identidad, en lugar
+    de asumir por el nombre.
+
+    Criterio (en orden):
+        1. Más columnas de módulos/nota final detectadas.
+        2. Más columnas de identidad.
+        3. Preferencia por los nombres habituales ('Calificaciones'/'Grades').
+        4. Más filas.
+
+    Args:
+        wb: Workbook de Notas cargado.
+
+    Returns:
+        Nombre de la hoja seleccionada.
+    """
+    candidates: List[Tuple[int, int, int, int, str]] = []
+    for name in wb.sheetnames:
+        ws = wb[name]
+        if (ws.max_row or 1) < 2:
+            continue
+        max_col = ws.max_column or 1
+        headers = [ws.cell(1, c).value for c in range(1, max_col + 1)]
+        grade_cols = len(find_module_columns(headers)) + (1 if find_final_grade_column(headers) else 0)
+        ident_cols = _count_identity_headers(headers)
+        if grade_cols >= 1 and ident_cols >= 1:
+            prefer = 1 if name in ("Calificaciones", "Grades") else 0
+            candidates.append((grade_cols, ident_cols, prefer, ws.max_row or 0, name))
+
+    if candidates:
+        candidates.sort(reverse=True)
+        return candidates[0][4]
+
+    # Respaldo: nombres habituales o la primera hoja
+    if "Calificaciones" in wb.sheetnames:
+        return "Calificaciones"
+    if "Grades" in wb.sheetnames:
+        return "Grades"
+    return wb.sheetnames[0]
+
+
 def parse_notas_archivo(
     file_path: Path | str,
     sheet_name: Optional[str] = None,
@@ -131,14 +193,9 @@ def parse_notas_archivo(
 
     if sheet_name and sheet_name in wb.sheetnames:
         ws = wb[sheet_name]
-    elif "Calificaciones" in wb.sheetnames:
-        sheet_name = "Calificaciones"
-        ws = wb["Calificaciones"]
-    elif "Grades" in wb.sheetnames:
-        sheet_name = "Grades"
-        ws = wb["Grades"]
     else:
-        sheet_name = wb.sheetnames[0]
+        # Selección automática de la hoja con calificaciones reales
+        sheet_name = _select_notas_sheet(wb)
         ws = wb[sheet_name]
 
     # 1. Leer encabezados

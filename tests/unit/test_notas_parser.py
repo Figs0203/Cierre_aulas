@@ -122,5 +122,41 @@ class TestNotasParserEstructurasAtipicas(unittest.TestCase):
             self.assertEqual(excluidos[0].first_name.value, "Excluido")
 
 
+    def test_selecciona_hoja_con_notas_entre_varias(self):
+        """Si hay varias hojas, debe elegir la que tiene calificaciones, no la del listado general.
+
+        Caso real CMI: 'Calificaciones' solo tiene identidad + sección (otro curso) y
+        'CURSO REALIZADO' tiene módulos y promedio. Debe usar 'CURSO REALIZADO'.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "CMI120_ECONOMIA_2.xlsx"
+            wb = openpyxl.Workbook()
+            ws1 = wb.active
+            ws1.title = "Calificaciones"
+            ws1.append(["OrgDefinedId", "Username", "Last Name", "First Name", "Sección"])
+            ws1.append(["9000000001", "otro1", "Apellido", "Nombre", "FI0171 CLASE 4164 E. FINANZAS"])
+            ws2 = wb.create_sheet("CURSO REALIZADO")
+            ws2.append([
+                "OrgDefinedId", "Username", "Last Name", "First Name",
+                "Calificación Módulo 1", "Calificación Módulo 2", "Calificación Módulo 3",
+                "Promedio curso completo", "", "N.º", "Semáforo de secuencia",
+            ])
+            ws2.append(["1000000001", "juan.perez1", "Perez Castro", "Juan Camilo", 5.0, 4.5, 4.8, 4.8, None, 1, "Verde"])
+            wb.save(path)
+            wb.close()
+
+            from parsing.notas_parser import _select_notas_sheet
+
+            wb2 = openpyxl.load_workbook(path)
+            self.assertEqual(_select_notas_sheet(wb2), "CURSO REALIZADO")
+            wb2.close()
+
+            estudiantes, _ = parse_notas_archivo(path)
+            self.assertEqual(len(estudiantes), 1)
+            self.assertEqual(estudiantes[0].first_name.value, "Juan Camilo")
+            self.assertIsNotNone(estudiantes[0].nota_final)
+            self.assertEqual(set(estudiantes[0].calificaciones_modulos.keys()), {"modulo_1", "modulo_2", "modulo_3"})
+
+
 if __name__ == "__main__":
     unittest.main()

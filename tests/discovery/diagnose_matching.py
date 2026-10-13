@@ -52,7 +52,7 @@ from normalization.text import (
     normalize_name_component,
 )
 from parsing.control_parser import parse_control_aulas
-from parsing.notas_parser import parse_notas_archivo
+from parsing.notas_parser import parse_notas_archivo, _select_notas_sheet
 from parsing.sistematizacion_parser import parse_sistematizacion_aula
 from security.privacy import mask_document, mask_email, mask_full_name
 
@@ -105,13 +105,8 @@ def inspect_structure(path: Path, label: str) -> None:
 
 def inspect_notas(path: Path) -> None:
     wb = _open(path)
-    # Hoja que elegiría el parser
-    if "Calificaciones" in wb.sheetnames:
-        chosen = "Calificaciones"
-    elif "Grades" in wb.sheetnames:
-        chosen = "Grades"
-    else:
-        chosen = wb.sheetnames[0]
+    # Hoja que elegiría el parser (misma lógica que el parser real)
+    chosen = _select_notas_sheet(wb)
     ws = wb[chosen]
 
     headers = _headers_of(ws)
@@ -268,32 +263,36 @@ def inspect_sistematizacion(path: Path, aula: str) -> object:
     return por_clase
 
 
-def inspect_control(path: Path, aula: str) -> None:
+def inspect_control(path: Path, aula: str, clases: list | None = None) -> None:
     wb = _open(path)
     lines = []
     tablas = [s for s in wb.sheetnames if s.startswith("Tabla_") or s == "CONTROL"]
     lines.append(f"Hojas Tabla_*/CONTROL: {tablas}")
+    targets = [aula.upper()] + [str(c).strip().upper() for c in (clases or [])]
     found_any = False
     for name in tablas:
         ws = wb[name]
-        hits = []
-        for r in range(1, (ws.max_row or 1) + 1):
-            for c in range(1, (ws.max_column or 1) + 1):
-                v = ws.cell(r, c).value
-                if v is not None and aula.upper() in str(v).upper():
-                    hits.append((r, c))
+        for target in targets:
+            if not target:
+                continue
+            hits = []
+            for r in range(1, (ws.max_row or 1) + 1):
+                for c in range(1, (ws.max_column or 1) + 1):
+                    v = ws.cell(r, c).value
+                    if v is not None and str(v).strip().upper() == target:
+                        hits.append((r, c))
+                        break
+                if len(hits) >= 3:
                     break
-            if len(hits) >= 3:
-                break
-        if hits:
-            found_any = True
-            lines.append(f"  • '{name}': aula '{aula}' encontrada en filas {[h[0] for h in hits]}")
+            if hits:
+                found_any = True
+                lines.append(f"  • '{name}': '{target}' encontrado en filas {[h[0] for h in hits]}")
     if not found_any:
-        lines.append(f"  ⚠️ El aula '{aula}' NO se encontró en ninguna hoja Tabla_*.")
+        lines.append(f"  ⚠️ Ni el aula '{aula}' ni las clases {clases} se encontraron en ninguna hoja Tabla_*.")
     wb.close()
 
     try:
-        metas = parse_control_aulas(path, target_aula=aula)
+        metas = parse_control_aulas(path, target_aula=aula, clases_objetivo=clases)
         lines.append(f"Metadatos de Control extraídos: {list(metas.keys())}")
         for k, m in metas.items():
             prog = m.programa_academico.value if m.programa_academico else None
@@ -386,8 +385,9 @@ def _run_all(file_paths: dict, aula: str) -> None:
 
     inspect_structure(notas, "NOTAS")
     inspect_notas(notas)
-    inspect_sistematizacion(sist, aula)
-    inspect_control(control, aula)
+    por_clase = inspect_sistematizacion(sist, aula)
+    clases = list(por_clase.keys()) if por_clase else []
+    inspect_control(control, aula, clases)
     if cert and cert.exists():
         inspect_structure(cert, "CERTIFICADOS")
     cross_probe(notas, sist, aula)
