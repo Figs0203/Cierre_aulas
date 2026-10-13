@@ -382,6 +382,22 @@ def _validate_xml_bytes(data: bytes) -> str:
         return f"ERROR: {e}"
 
 
+def _count_data_validations(path: Path) -> int:
+    """Cuenta las validaciones de datos (listas) en todas las hojas de un .xlsx."""
+    import zipfile
+
+    total = 0
+    try:
+        with zipfile.ZipFile(path) as z:
+            for name in z.namelist():
+                if name.startswith("xl/worksheets/") and name.endswith(".xml"):
+                    c = z.read(name).decode("utf-8", "ignore")
+                    total += c.count("<dataValidation ") + c.count("<x14:dataValidation ")
+    except Exception:  # noqa: BLE001
+        return -1
+    return total
+
+
 def simulate_full_cierre(file_paths: dict, aula: str) -> None:
     """Simula el CIERRE COMPLETO (Modo 5) sobre COPIAS y valida el XML resultante.
 
@@ -406,6 +422,9 @@ def simulate_full_cierre(file_paths: dict, aula: str) -> None:
             dst = tmp / Path(p).name
             shutil.copy2(p, dst)
             copies[role] = dst
+
+        # Conteo de listas de validación ANTES (para confirmar que se preservan)
+        dv_before = {role: _count_data_validations(p) for role, p in copies.items() if role != "notas"}
 
         result, _, _, _ = run_cierre_pipeline(
             file_paths=copies, target_aula=aula, codigo_curso=aula, is_simulation=True
@@ -435,6 +454,16 @@ def simulate_full_cierre(file_paths: dict, aula: str) -> None:
             lines.append(f"  • {Path(p).name}: {ok_count} hojas OK" + ("" if not bad else f", {len(bad)} con ERROR"))
             for name, res in bad:
                 lines.append(f"      ❌ {name}: {res}")
+
+        # Confirmar que las listas de validación (si existen) se conservan
+        for role in ("sistematizacion", "certificados", "control_aulas"):
+            p = copies.get(role)
+            if not p:
+                continue
+            before = dv_before.get(role, -1)
+            after = _count_data_validations(p)
+            icon = "✅" if before == after else "⚠️"
+            lines.append(f"  {icon} {Path(p).name}: listas de validación antes={before} / después={after}")
     except Exception as e:  # noqa: BLE001
         lines.append(f"ERROR en la simulación completa: {e}")
     finally:
