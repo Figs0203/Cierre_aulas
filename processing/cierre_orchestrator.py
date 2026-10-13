@@ -17,6 +17,11 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from core.models import AulaCierreResult, AulaMetadata, ClaseGroup
 from matching.engine import match_students_in_class
+from normalization.text import (
+    normalize_document,
+    normalize_email,
+    normalize_name_component,
+)
 from output.excel_generator import generate_cierre_excel
 from parsing.certificados_parser import parse_certificados_consecutivo
 from parsing.control_parser import parse_control_aulas
@@ -24,6 +29,45 @@ from parsing.notas_parser import parse_notas_archivo
 from parsing.sistematizacion_parser import parse_sistematizacion_aula
 from processing.rules_engine import apply_rules_to_match
 from security.integrity import compute_sha256, verify_integrity
+
+
+def _nota_identity_matches_class(
+    en,  # EstudianteNotas
+    ests_sist: List,
+) -> bool:
+    """Determina si una nota de Interactiva pertenece a la clase dada comparando identidad.
+
+    Se usa cuando el archivo de Notas NO trae columna 'Sección' (p. ej. cursos CMI),
+    para asignar cada estudiante a la clase correspondiente por documento, correo o
+    nombre en lugar de asignar el pool completo a todas las clases (lo que duplicaría
+    excluidos y no-match).
+
+    Returns:
+        True si la nota corresponde a algún estudiante de Sistematización de la clase.
+    """
+    en_doc = normalize_document(en.org_defined_id.value if en.org_defined_id else "")
+    en_mail = normalize_email(en.username.value if en.username else "")
+    en_name = (
+        f"{normalize_name_component(en.first_name.value if en.first_name else '')} "
+        f"{normalize_name_component(en.last_name.value if en.last_name else '')}"
+    ).strip()
+
+    for es in ests_sist:
+        es_doc = normalize_document(es.documento.value if es.documento else "")
+        es_mail = normalize_email(es.correo.value if es.correo else "")
+        es_name = (
+            f"{normalize_name_component(es.nombres.value if es.nombres else '')} "
+            f"{normalize_name_component(es.apellidos.value if es.apellidos else '')}"
+        ).strip()
+
+        if en_doc and es_doc and en_doc == es_doc:
+            return True
+        if en_mail and es_mail and (en_mail == es_mail or es_mail.startswith(en_mail + "@")):
+            return True
+        if en_name and es_name and en_name == es_name:
+            return True
+
+    return False
 
 
 def run_cierre_pipeline(
@@ -84,6 +128,40 @@ def run_cierre_pipeline(
     clases_groups: List[ClaseGroup] = []
 
     # Determinar si el archivo de notas tiene una sola sección o múltiples
+
+    # Pre-pasada: asignar cada nota a UNA sola clase (sección; si no, por identidad).
+    # Esto evita duplicar el mismo estudiante (y su exclusión/no-match) en varias clases
+    # cuando el archivo de Notas no trae columna 'Sección'.
+    multi_clase = len(estudiantes_sist_por_clase) > 1
+    notas_por_clase: Dict[str, list] = {}
+    assigned_rows: set[int] = set()
+
+    for clase_id, ests_sist in estudiantes_sist_por_clase.items():
+        if not multi_clase:
+            pool = list(estudiantes_notas)
+        else:
+            pool = [
+                en for en in estudiantes_notas
+                if en.row_number not in assigned_rows
+                and en.seccion and clase_id in str(en.seccion.value)
+            ]
+            if not pool:
+                pool = [
+                    en for en in estudiantes_notas
+                    if en.row_number not in assigned_rows
+                    and _nota_identity_matches_class(en, ests_sist)
+                ]
+        notas_por_clase[clase_id] = pool
+        assigned_rows.update(en.row_number for en in pool)
+
+    # Notas que no corresponden a ninguna clase: se reportan una sola vez en la
+    # primera clase (queda constancia en la hoja de validaciones).
+    if multi_clase:
+        leftovers = [en for en in estudiantes_notas if en.row_number not in assigned_rows]
+        if leftovers:
+            first_clase = next(iter(notas_por_clase))
+            notas_por_clase[first_clase].extend(leftovers)
+
     for clase_id, ests_sist in estudiantes_sist_por_clase.items():
         cg = ClaseGroup(clase_id=clase_id)
         cg.estudiantes_sist = ests_sist
@@ -96,19 +174,8 @@ def run_cierre_pipeline(
         cg.fecha_inicio = meta_clase.fecha_inicio
         cg.fecha_fin = meta_clase.fecha_fin
 
-        # Filtrar estudiantes de notas para esta clase específica
-        # Si solo hay una clase en el aula, todas las notas corresponden a esta clase
-        if len(estudiantes_sist_por_clase) == 1:
-            cg.estudiantes_notas = list(estudiantes_notas)
-        else:
-            # Si hay múltiples clases, asociar según la Sección en Notas
-            cg.estudiantes_notas = [
-                en for en in estudiantes_notas
-                if en.seccion and clase_id in str(en.seccion.value)
-            ]
-            # Si el filtro por sección no encontró nada, asignar el pool completo para matching determinístico
-            if not cg.estudiantes_notas:
-                cg.estudiantes_notas = list(estudiantes_notas)
+        # Notas ya asignadas a esta clase en la pre-pasada.
+        cg.estudiantes_notas = list(notas_por_clase.get(clase_id, []))
 
         # 7. Ejecutar Matching de Estudiantes en esta clase
         cg = match_students_in_class(cg)

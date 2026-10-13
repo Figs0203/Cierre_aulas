@@ -157,7 +157,10 @@ def parse_notas_archivo(
     col_username = 2
     col_last_name = 3
     col_first_name = 4
-    col_seccion = 5
+    # La columna 'Sección' es OPCIONAL: algunos cursos (p. ej. CMI) exportan las
+    # notas sin ella. Si no se detecta por encabezado, se deja en None para no
+    # confundir una columna de calificaciones con la sección.
+    col_seccion: Optional[int] = None
 
     for c_idx, h in enumerate(raw_headers, start=1):
         if not h:
@@ -173,6 +176,19 @@ def parse_notas_archivo(
             col_first_name = c_idx
         elif "sección" in h_lower or "seccion" in h_lower:
             col_seccion = c_idx
+
+    # Columnas donde tiene sentido buscar el relleno naranja de "estudiante excluido".
+    # El color de exclusión marca al ESTUDIANTE (sus columnas de identidad/nombre) y,
+    # en algunos formatos, también las de calificaciones. Se EXCLUYEN columnas extra
+    # como la de semáforo o columnas en blanco, que suelen tener rellenos de color
+    # (ámbar/dorado) y provocarían falsos positivos de exclusión.
+    student_cols: set[int] = {col_org_id, col_username, col_last_name, col_first_name}
+    if col_seccion:
+        student_cols.add(col_seccion)
+    student_cols.update(int(c) for c in mod_cols.values() if c)
+    if final_col:
+        student_cols.add(int(final_col))
+    student_cols = {c for c in student_cols if c and c >= 1}
 
     estudiantes: List[EstudianteNotas] = []
     secciones_map: Dict[str, Dict[str, str]] = {}
@@ -201,7 +217,7 @@ def parse_notas_archivo(
         username_v = ws.cell(r, col_username).value
         last_name_v = ws.cell(r, col_last_name).value
         first_name_v = ws.cell(r, col_first_name).value
-        seccion_v = ws.cell(r, col_seccion).value
+        seccion_v = ws.cell(r, col_seccion).value if col_seccion else None
 
         # Registrar metadatos de sección
         if seccion_v:
@@ -240,10 +256,12 @@ def parse_notas_archivo(
                 )
 
         # Detección de color de relleno (naranja / excluido)
-        # Inspecciona exhaustivamente todas las celdas de la fila
+        # Se inspeccionan únicamente las columnas del estudiante (identidad, nombre y
+        # calificaciones). Así se evita que columnas de estado/semáforo con colores
+        # ámbar/dorado marquen por error a todo el curso como excluido.
         is_orange = False
         fill_details: Dict[str, Any] = {}
-        for c in range(1, max_col + 1):
+        for c in sorted(student_cols):
             c_obj = ws.cell(r, c)
             f = c_obj.fill
             if f and f.fill_type and f.fill_type != "none":

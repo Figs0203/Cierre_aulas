@@ -124,6 +124,16 @@ oficiales de la biblioteca. Ajustes recientes (formato oficial):
   `estado_certificacion`, etc.), por lo que las columnas *Estado para
   certificación*, *Se elaboró*, *Código del certificado* y *Se envió* quedaban
   vacías.
+- **Notas sin columna 'Sección' (p. ej. cursos CMI)**: la sección es opcional
+  (`col_seccion=None`); la asignación clase↔notas se hace por identidad
+  (documento/correo/nombre) y cada estudiante se asigna a UNA sola clase (sin
+  duplicar excluidos ni no-match) — `processing/cierre_orchestrator.py`.
+- **Detección de color naranja restringida** a las columnas del estudiante
+  (identidad, nombre y calificaciones). Así columnas de estado/semáforo con
+  rellenos ámbar/dorado (`FFC000`, etc.) NO marcan a todo el curso como excluido.
+- **Nota final**: se reconoce también `Promedio curso completo`
+  (`promedio_curso`) además de `Calculated Final`/`Nota Final`
+  (`normalization/headers.py`).
 
 - **Preservación de listas de validación de datos**: openpyxl descarta las
   extensiones de hoja (`extLst`), incluidas las listas modernas
@@ -137,5 +147,5 @@ oficiales de la biblioteca. Ajustes recientes (formato oficial):
 > constante `_BORDER_COLOR` de `output/direct_updater.py` y
 > `output/excel_generator.py`.
 
-Última verificación: 38 tests OK. El grafo de conocimiento se regenera con
+Última verificación: 42 tests OK. El grafo de conocimiento se regenera con
 `graphify update .` tras cada cambio de código.

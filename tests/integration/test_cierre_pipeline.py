@@ -231,6 +231,61 @@ class TestCierrePipelineIntegration(unittest.TestCase):
                 self.assertTrue(str(ws.cell(r, 23).value or "").strip())
             wb.close()
 
+    def test_no_section_notas_assigns_students_without_duplication(self):
+        """Notas sin columna 'Sección' (p. ej. CMI): cada estudiante se asigna a UNA clase.
+
+        Regresión: antes, al no hallar 'Sección', se marcaba todo el curso como excluido
+        (por el color del semáforo) y/o se duplicaba cada estudiante en todas las clases.
+        """
+        from openpyxl.styles import PatternFill
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            paths = generate_all_fixtures(Path(tmpdir))
+
+            # Reemplazar el archivo de Notas por uno SIN 'Sección' y con semáforo ámbar
+            students = [
+                ("1000000001", "juan.perez1", "Perez Castro", "Juan Camilo", 5.0, 4.5, 4.8, 4.8),
+                ("1000000002", "maria.gomez2", "Gomez Toro", "Maria Alejandra", 4.5, 4.0, 5.0, 4.5),
+                ("1000000003", "carlos.restrepo3", "Restrepo Rios", "Carlos Andres", 2.0, 1.5, 2.0, 2.0),
+                ("1000000004", "laura.velez4", "Velez Jaramillo", "Laura Marcela", 4.8, 5.0, 4.9, 4.9),
+                ("1000000005", "santiago.morales5", "Morales Cano", "Santiago", 4.0, 4.2, 4.5, 4.2),
+                ("1000000006", "valentina.ospina6", "Ospina Duque", "Valentina", 5.0, 4.8, 5.0, 4.9),
+            ]
+            wb = openpyxl.Workbook()
+            ws = wb.active
+            ws.title = "Calificaciones"
+            ws.append([
+                "OrgDefinedId", "Username", "Last Name", "First Name",
+                "Calificación Módulo 1", "Calificación Módulo 2", "Calificación Módulo 3",
+                "Promedio curso completo", "", "N. Semáforo de secuencia",
+            ])
+            amber = PatternFill(start_color="FFC000", end_color="FFC000", fill_type="solid")
+            orange = PatternFill(start_color="FF8C00", end_color="FF8C00", fill_type="solid")
+            for i, s in enumerate(students):
+                r = i + 2
+                ws.append(list(s) + [None, "Amarillo"])
+                ws.cell(r, 10).fill = amber  # semáforo ámbar en todos (no debe excluir)
+                if s[2] == "Restrepo Rios":  # exclusión real sobre la identidad
+                    for c in range(1, 5):
+                        ws.cell(r, c).fill = orange
+            ws.parent.save(paths["notas"])
+            ws.parent.close()
+
+            result, _, _, _ = run_cierre_pipeline(
+                file_paths=paths,
+                target_aula="ABBUEI154",
+                codigo_curso="ABBUEI154",
+                is_simulation=True,
+            )
+
+            self.assertEqual(result.total_estudiantes, 6)
+            self.assertEqual(result.total_matched, 5)
+            # El excluido se cuenta UNA sola vez (no una por clase)
+            self.assertEqual(result.total_excluded, 1)
+            # Cada clase tiene exactamente sus estudiantes
+            for cg in result.clases:
+                self.assertEqual(len(cg.matches) + len(cg.unmatched_sist), len(cg.estudiantes_sist))
+
 
 if __name__ == "__main__":
     unittest.main()

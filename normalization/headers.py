@@ -116,6 +116,9 @@ _FINAL_GRADE_PATTERNS = [
     re.compile(r"nota\s*final", re.IGNORECASE),
     re.compile(r"promedio\s*final", re.IGNORECASE),
     re.compile(r"final\s*grade", re.IGNORECASE),
+    # Algunos cursos (p. ej. CMI) exportan la nota final como 'Promedio curso completo'
+    re.compile(r"promedio\s*curso\s*completo", re.IGNORECASE),
+    re.compile(r"promedio\s*general", re.IGNORECASE),
 ]
 
 
@@ -230,7 +233,14 @@ def find_module_columns(headers: list[str | None]) -> dict[int, int]:
 
 
 def find_final_grade_column(headers: list[str | None]) -> int | None:
-    """Retorna el índice de columna (1-based) de la nota final o None."""
+    """Retorna el índice de columna (1-based) de la nota final o None.
+
+    Reconoce tanto 'nota_final' (Calculated Final, Nota Final, etc.) como
+    'promedio_curso' (columna 'Promedio curso completo', usada por cursos como CMI).
+    """
     analysis = analyze_headers(headers)
-    mapping = analysis.get_canonical("nota_final")
-    return mapping.col_idx if mapping else None
+    for canonical in ("nota_final", "promedio_curso"):
+        mapping = analysis.get_canonical(canonical)
+        if mapping:
+            return mapping.col_idx
+    return None
