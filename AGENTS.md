@@ -166,10 +166,17 @@ oficiales de la biblioteca. Ajustes recientes (formato oficial):
   CMI: 'Calificaciones' traía solo identidad y sección de otro curso, y las notas
   reales estaban en 'CURSO REALIZADO' — `parsing/notas_parser.py:_select_notas_sheet`.
 
+- **Detección de módulos flexible**: además de "módulo N" se reconoce
+  "Cuestionario N", "Buzón N", "Foro N", "Taller N", etc.
+  (`normalization/headers.py:_MODULE_REGEX`). Caso real CMI121: la columna
+  "Cuestionario 1: ..." no se detectaba y el módulo 1 se ignoraba.
+- **Identidad en Notas**: se reconoce la columna "Documento" como documento del
+  estudiante (además de "OrgDefinedId") — `parsing/notas_parser.py`.
+
 > Nota: el color de borde de las tablas escritas se fijó en negro para que sea
 > visible y consistente. Si el documento oficial usa otro color, se cambia en la
 > constante `_BORDER_COLOR` de `output/direct_updater.py` y
 > `output/excel_generator.py`.
 
-Última verificación: 43 tests OK. El grafo de conocimiento se regenera con
+Última verificación: 46 tests OK. El grafo de conocimiento se regenera con
 `graphify update .` tras cada cambio de código.

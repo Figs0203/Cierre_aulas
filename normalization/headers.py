@@ -99,14 +99,20 @@ class HeaderAnalysisResult:
 # Regex para detección de módulos
 # ============================================================
 
-# Patrón principal: captura "módulo N" independientemente del prefijo
+# Patrón principal: captura el número de módulo aunque el encabezado NO diga
+# literalmente "módulo". En los archivos de Interactiva cada módulo puede venir
+# como "Cuestionario 1", "Buzón 2", "Foro 3", etc.
 # Ejemplos que matchean:
-#   "Cuestionario módulo 1: estrategia y herramientas"
-#   "Buzón módulo 2: evaluación de la información"
-#   "módulo 3"
-#   "Modulo 4"
+#   "Cuestionario módulo 1: estrategia y herramientas"  → 1
+#   "Buzón módulo 2: evaluación de la información"       → 2
+#   "Cuestionario 1: estrategia y herramientas"         → 1  (sin la palabra módulo)
+#   "módulo 3" / "Modulo 4" / "N.º 5"                     → 3 / 4 / 5
 _MODULE_REGEX = re.compile(
-    r"m[oó]dulo\s*(\d+)",
+    r"(?:"
+    r"m[oó]dulo|cuestionario|buz[oó]n|foro|taller|unidad|actividad|"
+    r"evaluaci[oó]n|tarea|quiz|examen|parcial|entrega|lecci[oó]n"
+    r")"
+    r"\s*(?:n[.\u00ba\u00b0]?\s*)?(\d+)",
     re.IGNORECASE,
 )
 

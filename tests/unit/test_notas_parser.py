@@ -158,5 +158,36 @@ class TestNotasParserEstructurasAtipicas(unittest.TestCase):
             self.assertEqual(set(estudiantes[0].calificaciones_modulos.keys()), {"modulo_1", "modulo_2", "modulo_3"})
 
 
+    def test_detecta_modulo_sin_palabra_modulo(self):
+        """Regresión CMI121: 'Cuestionario 1' (sin la palabra 'módulo') debe ser módulo 1.
+
+        Además, la columna de identidad puede llamarse 'Documento' en lugar de
+        'OrgDefinedId'.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "CMI121_DERECHO_2.xlsx"
+            headers = [
+                "Documento", "Username", "Apellidos", "Nombres", "Sección",
+                "Cuestionario 1: estrategia y herramientas de búsqueda",
+                "Cuestionario módulo 2: evaluación y organización de la información",
+                "Cuestionario módulo 3: uso ético de la información",
+                "Nota final", "", "N.º", "Semáforo de secuencia",
+            ]
+            rows = [["1000000001", "user1", "Apellido", "Nombre", "DR1004-1914-DERECHO",
+                     5.0, 3.8, 4.9, 4.4, None, 1, "Verde"]]
+            _build_notas(path, headers, rows)
+
+            estudiantes, _ = parse_notas_archivo(path)
+            es = estudiantes[0]
+            # Identidad por columna 'Documento'
+            self.assertEqual(es.org_defined_id.value, "1000000001")
+            # Módulo 1 detectado aunque el encabezado no diga 'módulo'
+            self.assertEqual(
+                {k: v.value for k, v in es.calificaciones_modulos.items()},
+                {"modulo_1": 5.0, "modulo_2": 3.8, "modulo_3": 4.9},
+            )
+            self.assertEqual(es.nota_final.value, 4.4)
+
+
 if __name__ == "__main__":
     unittest.main()

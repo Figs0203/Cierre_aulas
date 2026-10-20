@@ -27,6 +27,8 @@ HEADER_ALIASES: dict[str, str] = {
     # ============================================================
     "orgdefinedid": "org_defined_id",
     "org defined id": "org_defined_id",
+    # Algunos cursos exportan la identidad como 'Documento' (en lugar de OrgDefinedId)
+    "documento": "org_defined_id",
 
     "username": "username",
     "user name": "username",

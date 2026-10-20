@@ -109,6 +109,25 @@ def parse_seccion_info(seccion_str: str | None) -> Tuple[str | None, str | None]
     return None, clean
 
 
+def _is_document_header(h_lower: str) -> bool:
+    """Indica si un encabezado corresponde a la columna del número de documento.
+
+    Algunos cursos exportan la identidad como 'Documento' en lugar de
+    'OrgDefinedId'. Se excluye 'tipo de documento'.
+    """
+    hl = str(h_lower).strip()
+    if "tipo de documento" in hl:
+        return False
+    return (
+        "orgdefinedid" in hl
+        or "org defined id" in hl
+        or hl in (
+            "documento", "documento de identidad", "identificación", "identificacion",
+            "número de documento", "numero de documento", "nro documento", "n. documento",
+        )
+    )
+
+
 def _count_identity_headers(headers: List[Optional[str]]) -> int:
     """Cuenta cuántos encabezados corresponden a columnas de identidad del estudiante."""
     count = 0
@@ -117,7 +136,7 @@ def _count_identity_headers(headers: List[Optional[str]]) -> int:
             continue
         hl = str(h).lower()
         if (
-            "orgdefinedid" in hl or "username" in hl
+            _is_document_header(hl) or "username" in hl
             or "last name" in hl or "first name" in hl
             or "apellidos" in hl or "nombres" in hl
         ):
@@ -223,7 +242,7 @@ def parse_notas_archivo(
         if not h:
             continue
         h_lower = h.lower()
-        if "orgdefinedid" in h_lower:
+        if _is_document_header(h_lower):
             col_org_id = c_idx
         elif "username" in h_lower:
             col_username = c_idx
