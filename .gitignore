@@ -29,6 +29,7 @@ output/*.xlsx
 output/*.csv
 input/*.xlsx
 discovery_*.txt
+diagnostico_*.txt
 *.log
 *.xlsx
 !tests/fixtures/*.xlsx
