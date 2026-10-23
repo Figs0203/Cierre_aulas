@@ -38,7 +38,10 @@ pip install -r requirements.txt
 # Ejecutar el menú interactivo (Python 3.10+)
 python main.py
 
-# Suite de pruebas completa
+# Suite de pruebas completa (recomendado: incluye también las clases estilo pytest)
+python -m pytest tests -q
+
+# Alternativa con unittest (solo ejecuta las clases unittest.TestCase)
 python -m unittest discover -s tests -p "test_*.py" -v
 
 # Inspectores de descubrimiento directo (Fase 0) sobre archivos reales
@@ -149,13 +152,30 @@ oficiales de la biblioteca. Ajustes recientes (formato oficial):
 
 - **Preservación de listas de validación de datos y fórmulas**: openpyxl puede
   descartar al guardar tanto el bloque `<dataValidations>` (listas estándar) como
-  las extensiones de hoja (`extLst`, p. ej. `x14:dataValidations`). Tras guardar,
-  `_restore_sheet_blocks` reinyecta **ambos bloques** desde el backup previo,
-  respetando el orden del esquema OOXML (`dataValidations` antes de
-  `pageMargins`; `extLst` al final). `_ensure_ns_decls` copia a la raíz del
-  worksheet guardado las declaraciones `xmlns:` del original (p. ej. `x14:`,
-  `xm:`), evitando el error de Excel "Prefijo no declarado". Las fórmulas del
-  archivo se conservan (solo se escriben celdas vacías).
+  las extensiones de hoja (`extLst`, p. ej. `x14:dataValidations`) y algunos
+  `definedNames` que son el origen de las listas. Tras guardar,
+  `preserve_sheet_data_blocks` (`output/direct_updater.py`) reinyecta **ambos
+  bloques** desde el respaldo previo y: (a) los **combina sin duplicar** con los
+  que haya escrito openpyxl (nunca se pierde una validación presente en
+  cualquiera de los dos); (b) respeta el orden del esquema OOXML
+  (`dataValidations` después de `conditionalFormatting` y antes de
+  `pageMargins`/`extLst`; `extLst` al final); (c) admite las formas autocerradas
+  `<dataValidations/>` y `<extLst/>`; (d) copia a la raíz del worksheet las
+  declaraciones `xmlns:` del original **y las de `xl/workbook.xml`** (prefijos
+  como `x14`, `xm`, `xr`), evitando "Prefijo no declarado"; (e) reincorpora los
+  `definedNames` que falten (nunca los que apuntan a libros externos); (f) valida
+  el XML resultante con ElementTree y, si es inválido, conserva la versión de
+  openpyxl; y (g) **verifica huella por huella** (tipo + `sqref` + fórmulas) que
+  ninguna lista del original se haya perdido; si detecta pérdidas reintenta con
+  una estrategia "dura" (bloque original literal) y, si aun así falla, lo
+  reporta. El Modo 5 imprime el resultado de esa verificación
+  (`report.validaciones_preservadas`) y las advertencias (`report.warnings`).
+- **Fecha de envío en Sistematización**: la columna *Fecha de envío* se escribe
+  como fecha oficial `DD-mes-AAAA` con mes abreviado en minúsculas (ej.
+  `24-mar-2026`), nunca como `str(datetime)` (`2026-03-24 00:00:00`, que además
+  arrastraba la hora en ceros) — `processing/rules_engine.py:_format_fecha_envio_sistematizacion`.
+  En el archivo auxiliar (Modo 3) esa columna se excluye del `upper()` aplicado
+  al resto de la fila — `output/excel_generator.py`.
 - El modo **7 (Diagnóstico)** incluye una **simulación completa del Modo 5**
   sobre copias (parsers, matcheo, saneo y escritura) que valida el XML de cada
   hoja resultante con expat y reporta el error exacto si lo hubiera.
@@ -178,5 +198,5 @@ oficiales de la biblioteca. Ajustes recientes (formato oficial):
 > constante `_BORDER_COLOR` de `output/direct_updater.py` y
 > `output/excel_generator.py`.
 
-Última verificación: 46 tests OK. El grafo de conocimiento se regenera con
-`graphify update .` tras cada cambio de código.
+Última verificación: **102 tests OK** (`python -m pytest tests -q`). El grafo de
+conocimiento se regenera con `graphify update .` tras cada cambio de código.

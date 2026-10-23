@@ -190,8 +190,13 @@ def generate_cierre_excel(
     all_sist_students.sort(key=lambda x: x.row_number)
 
     col_correo_idx = None
+    col_fecha_envio_idx = None
     if all_sist_students and all_sist_students[0].column_indices:
         col_correo_idx = all_sist_students[0].column_indices.get("correo")
+        # La columna 'Fecha de envío' conserva el formato oficial 'DD-mes-AAAA'
+        # con el mes abreviado en minúsculas (ej. '24-mar-2026'), por lo que no
+        # se aplica la conversión a MAYÚSCULAS del resto de la fila.
+        col_fecha_envio_idx = all_sist_students[0].column_indices.get("fecha_envio")
 
     SPECIAL_CASING_VALUES = {
         "aprobó": "Aprobó",
@@ -220,8 +225,9 @@ def generate_cierre_excel(
             # Todo en mayúsculas, excepto correos electrónicos y estados con formato oficial exacto
             if isinstance(val, str) and not val.startswith("="):
                 is_email = (col_idx == col_correo_idx) or ("@" in val and "." in val)
-                if is_email:
-                    pass  # Mantener correos tal cual
+                is_fecha_envio = (col_idx == col_fecha_envio_idx)
+                if is_email or is_fecha_envio:
+                    pass  # Mantener correos y fechas de envío tal cual
                 else:
                     val_clean = val.strip()
                     val_lower = val_clean.lower()

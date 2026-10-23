@@ -38,6 +38,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+from xml.etree import ElementTree
 
 import openpyxl
 from openpyxl.styles import Alignment, Border, Font, Side
@@ -96,6 +97,9 @@ class DirectUpdateReport:
     certificados_rows_appended: int = 0
     control_aulas_classes_marked: int = 0
     errors: List[str] = field(default_factory=list)
+    warnings: List[str] = field(default_factory=list)
+    # Verificación de listas de validación por archivo (SheetBlocksReport.resumen()).
+    validaciones_preservadas: Dict[str, str] = field(default_factory=dict)
 
     @property
     def is_successful(self) -> bool:
@@ -207,16 +211,28 @@ def _resolve_external_link_formulas(wb: openpyxl.Workbook, source_path: Path | s
 
 
 # ---------------------------------------------------------------------------
-# PRESERVACIÓN DE EXTENSIONES DE HOJA (listas de validación modernas x14, etc.)
+# PRESERVACIÓN DE LISTAS DE VALIDACIÓN DE DATOS Y EXTENSIONES DE HOJA
 # ---------------------------------------------------------------------------
-# openpyxl no soporta las extensiones de hoja (`extLst`), por lo que al guardar
-# descarta, entre otras, las listas de validación de datos modernas
-# (`x14:dataValidations`) y el formato condicional moderno (`x14:conditionalFormatting`).
-# Para no perderlas, se copian desde el archivo original (aún intacto en disco
-# antes del guardado) y se reinyectan en cada hoja del archivo ya guardado.
+# openpyxl no soporta (y por tanto descarta al guardar):
+#   • Las extensiones de hoja (`extLst`), donde Excel 2010+ guarda las listas de
+#     validación modernas (`x14:dataValidations`) y el formato condicional moderno.
+#   • En algunos escenarios, el bloque estándar `<dataValidations>`.
+#   • Nombres definidos del libro (`definedNames`) que son el origen de muchas
+#     listas desplegables (p. ej. `formula1="ListaSI"`).
+#
+# Estrategia (a prueba de pérdidas):
+#   1. Se extraen los bloques del respaldo íntegro del archivo original.
+#   2. Se COMBINAN con los del archivo guardado por openpyxl (unión sin duplicar),
+#      de modo que nunca se pierda una validación presente en cualquiera de los dos.
+#   3. Se reinyectan respetando el orden estricto del esquema OOXML y declarando
+#      los namespaces necesarios en la raíz del worksheet.
+#   4. Se VERIFICA huella por huella (tipo + rango + fórmula) que ninguna validación
+#      del original se haya perdido. Si se detecta alguna pérdida se reintenta con
+#      una estrategia "dura" (bloque original literal) y, si aun así falla, se
+#      informa explícitamente al usuario en lugar de fallar en silencio.
 
-# Bloque <extLst> de una hoja de cálculo (no anidado).
-_SHEET_EXTLST_RE = re.compile(r"<extLst\b[^>]*>.*?</extLst>", re.DOTALL)
+# Bloque <extLst> de una hoja de cálculo (no anidado). Acepta la forma autocerrada.
+_SHEET_EXTLST_RE = re.compile(r"<extLst\b[^>]*>.*?</extLst>|<extLst\b[^>]*/>", re.DOTALL)
 # Bloque <ext ...>...</ext> individual dentro de un extLst.
 _EXT_BLOCK_RE = re.compile(r"<ext\b[^>]*>.*?</ext>", re.DOTALL)
 # Atributo uri="..." de un <ext ...>
@@ -224,14 +240,43 @@ _EXT_URI_RE = re.compile(r'<ext\b[^>]*\buri="([^"]+)"')
 # Declaración de namespace con prefijo: xmlns:prefijo="uri"
 _NS_DECL_RE = re.compile(r'\bxmlns:([A-Za-z_][\w.\-]*)\s*=\s*["\']([^"\']+)["\']')
 # Bloque <dataValidations>...</dataValidations> (listas de validación estándar).
-_DATA_VALIDATIONS_RE = re.compile(r"<dataValidations\b[^>]*>.*?</dataValidations>", re.DOTALL)
+# Se admite también la forma autocerrada `<dataValidations count="0"/>`.
+_DATA_VALIDATIONS_RE = re.compile(
+    r"<dataValidations\b[^>]*>.*?</dataValidations>|<dataValidations\b[^>]*/>", re.DOTALL
+)
+# Elemento <dataValidation> individual (contenido o autocerrado).
+# No confunde `x14:dataValidation` porque exige `<dataValidation` tras el '<'.
+_DATA_VALIDATION_RE = re.compile(
+    r"<dataValidation\b[^>]*/>|<dataValidation\b[^>]*>.*?</dataValidation>", re.DOTALL
+)
+# Equivalente moderno dentro de `extLst` (`x14:dataValidation`).
+_X14_VALIDATION_RE = re.compile(
+    r"<x14:dataValidation\b[^>]*/>|<x14:dataValidation\b[^>]*>.*?</x14:dataValidation>",
+    re.DOTALL,
+)
+# Elemento <definedName> individual del libro.
+_DEFINED_NAME_RE = re.compile(
+    r"<definedName\b[^>]*/>|<definedName\b[^>]*>.*?</definedName>", re.DOTALL
+)
+# Bloque <definedNames>...</definedNames> del libro.
+_DEFINED_NAMES_BLOCK_RE = re.compile(
+    r"<definedNames\b[^>]*>.*?</definedNames>|<definedNames\b[^>]*/>", re.DOTALL
+)
 
 # Elementos que, según el esquema CT_Worksheet, van DESPUÉS de <dataValidations>.
+# IMPORTANTE: no agregar elementos que vayan ANTES (mergeCells, conditionalFormatting,
+# autoFilter, etc.); hacerlo produciría un XML fuera de orden de esquema.
 _AFTER_DATA_VALIDATIONS = (
     "<hyperlinks", "<printOptions", "<pageMargins", "<pageSetup", "<headerFooter",
     "<rowBreaks", "<colBreaks", "<customProperties", "<cellWatches", "<ignoredErrors",
     "<smartTags", "<drawing", "<legacyDrawing", "<legacyDrawingHF", "<picture",
     "<oleObjects", "<controls", "<webPublishItems", "<tableParts", "<extLst",
+)
+
+# Elementos que, según el esquema CT_Workbook, van DESPUÉS de <definedNames>.
+_AFTER_DEFINED_NAMES = (
+    "<calcPr", "<oleSize", "<customWorkbookViews", "<pivotCaches", "<smartTagPr",
+    "<smartTagTypes", "<webPublishing", "<fileRecoveryPr", "<webPublishObjects", "<extLst",
 )
 
 
@@ -339,113 +384,288 @@ def _read_sheet_names_by_path(zf: "zipfile.ZipFile") -> Dict[str, str]:
     return mapping
 
 
-def _restore_sheet_blocks(
-    output_path: Path | str,
-    source_path: Path | str,
-) -> tuple:
-    """Restaura en el archivo guardado las listas de validación y extensiones del original.
+@dataclass
+class SheetBlocksReport:
+    """Resultado de la preservación de listas de validación de un archivo oficial.
 
-    openpyxl puede descartar al guardar:
-      - El bloque `<dataValidations>` (listas de validación de datos estándar).
-      - El bloque `<extLst>` (extensiones `x14`, p. ej. `x14:dataValidations`).
+    Permite informar al usuario, de forma verificable, cuántas listas desplegables
+    (validaciones de datos) existían antes y cuántas quedaron después de aplicar el
+    cierre, además de cualquier problema detectado durante la restauración.
+    """
 
-    Esta función toma ambos bloques del archivo original (backup o el original aún
-    intacto) y los reinyecta hoja por hoja en el archivo recién guardado, respetando
-    el orden del esquema OOXML y declarando los namespaces necesarios.
+    archivo: str = ""
+    validaciones_original: int = 0
+    validaciones_resultado: int = 0
+    validaciones_x14_original: int = 0
+    validaciones_x14_resultado: int = 0
+    hojas_con_validaciones: int = 0
+    nombres_definidos_restaurados: int = 0
+    problemas: List[str] = field(default_factory=list)
+
+    @property
+    def ok(self) -> bool:
+        """True si no se detectó ninguna pérdida de listas de validación."""
+        return not self.problemas
+
+    def resumen(self) -> str:
+        """Resumen de una línea, apto para la consola del Modo 5."""
+        if not self.validaciones_original and not self.validaciones_x14_original:
+            return f"✅ {self.archivo}: sin listas de validación de datos que preservar."
+        icono = "✅" if self.ok else "⚠️"
+        extra = ""
+        if self.nombres_definidos_restaurados:
+            extra = f" | nombres definidos restaurados: {self.nombres_definidos_restaurados}"
+        return (
+            f"{icono} {self.archivo}: listas de validación estándar "
+            f"{self.validaciones_original}→{self.validaciones_resultado}, "
+            f"modernas (x14) {self.validaciones_x14_original}→{self.validaciones_x14_resultado}"
+            f"{extra}"
+        )
+
+
+class _MemZip:
+    """Adaptador mínimo para reutilizar `_read_sheet_names_by_path` sobre bytes en memoria."""
+
+    def __init__(self, parts: Dict[str, bytes]):
+        self._parts = parts
+
+    def read(self, name: str) -> bytes:
+        return self._parts[name]
+
+
+def _read_sheet_names_by_path_dict(members: Dict[str, bytes]) -> Dict[str, str]:
+    """Igual que `_read_sheet_names_by_path` pero sobre un dict de partes ya leídas."""
+    return _read_sheet_names_by_path(_MemZip(members))
+
+
+def _normalize_xml_fragment(fragment: str) -> str:
+    """Huella estable de un fragmento XML (insensible a espacios y a `xr:uid`)."""
+    txt = re.sub(r'\s+xr:uid="[^"]*"', "", fragment)
+    return re.sub(r"\s+", " ", txt).strip()
+
+
+def _validation_fingerprints(sheet_xml: str) -> set:
+    """Conjunto de validaciones de datos presentes en el XML de una hoja.
+
+    Incluye tanto las estándar (`<dataValidation>`) como las modernas
+    (`<x14:dataValidation>` dentro de `extLst`). Cada huella conserva el rango
+    (`sqref`), el tipo y las fórmulas, de modo que dos listas distintas nunca se
+    confunden entre sí.
+    """
+    items = _DATA_VALIDATION_RE.findall(sheet_xml) + _X14_VALIDATION_RE.findall(sheet_xml)
+    return {_normalize_xml_fragment(item) for item in items}
+
+
+def _is_well_formed(xml: str) -> bool:
+    """True si el XML se puede parsear (sin prefijos sin declarar, sin errores)."""
+    try:
+        ElementTree.fromstring(xml)
+        return True
+    except Exception:  # noqa: BLE001 - cualquier error de parseo invalida el parche
+        return False
+
+
+def _build_data_validations_block(
+    source_block: Optional[str],
+    saved_xml: str,
+    literal: bool = False,
+) -> Optional[str]:
+    """Construye el bloque `<dataValidations>` definitivo para una hoja.
+
+    Combina (unión sin duplicar) las validaciones del original con las que openpyxl
+    haya escrito en el archivo guardado, de modo que ninguna se pierda.
 
     Args:
-        output_path: Ruta del archivo ya guardado por openpyxl (se reescribe).
-        source_path: Ruta del archivo original con las validaciones/extensiones.
+        source_block: Bloque `<dataValidations>` del archivo original (respaldo).
+        saved_xml: XML de la hoja tal como la guardó openpyxl.
+        literal: Si es True devuelve el bloque original tal cual (estrategia "dura").
 
     Returns:
-        Tupla (n_hojas_dataValidations, n_hojas_extLst) restauradas.
+        El bloque XML a escribir, o None si el original no tenía validaciones.
     """
-    output_path = Path(output_path)
-    source_path = Path(source_path)
-    if not output_path.exists() or not source_path.exists():
-        return (0, 0)
+    source_items = _DATA_VALIDATION_RE.findall(source_block or "")
+    if not source_items:
+        return None
+    if literal:
+        return source_block.strip()
 
-    # Leer el archivo original: extraer bloques y namespaces por hoja
-    original_dv_by_sheet: Dict[str, str] = {}
-    original_extlst_by_sheet: Dict[str, str] = {}
-    original_ns_by_sheet: Dict[str, Dict[str, str]] = {}
-    with zipfile.ZipFile(source_path, "r") as zf_src:
-        name_to_path = _read_sheet_names_by_path(zf_src)
-        for sheet_name, sheet_path in name_to_path.items():
-            try:
-                src_xml = zf_src.read(sheet_path).decode("utf-8", "ignore")
-            except KeyError:
-                continue
-            dv_m = _DATA_VALIDATIONS_RE.search(src_xml)
-            ext_m = _SHEET_EXTLST_RE.search(src_xml)
-            if not dv_m and not ext_m:
-                continue
-            if dv_m:
-                original_dv_by_sheet[sheet_name] = dv_m.group(0)
-            if ext_m:
-                original_extlst_by_sheet[sheet_name] = ext_m.group(0)
-            # Todas las declaraciones xmlns: del original (raíz, validaciones, extLst)
-            original_ns_by_sheet[sheet_name] = _collect_ns_decls(src_xml)
+    merged = list(source_items)
+    seen = {_normalize_xml_fragment(item) for item in merged}
+    saved_m = _DATA_VALIDATIONS_RE.search(saved_xml)
+    if saved_m:
+        for item in _DATA_VALIDATION_RE.findall(saved_m.group(0)):
+            fingerprint = _normalize_xml_fragment(item)
+            if fingerprint not in seen:
+                seen.add(fingerprint)
+                merged.append(item)
 
-    if not original_dv_by_sheet and not original_extlst_by_sheet:
-        return (0, 0)
+    return '<dataValidations count="%d">%s</dataValidations>' % (len(merged), "".join(merged))
 
-    # Leer el archivo guardado, modificar las hojas y reescribir el zip
-    with zipfile.ZipFile(output_path, "r") as zf_out:
-        members: Dict[str, bytes] = {n: zf_out.read(n) for n in zf_out.namelist()}
-        infos = {i.filename: i for i in zf_out.infolist()}
 
-    name_to_path_out = _read_sheet_names_by_path_dict(members)
+def _apply_preserved_blocks(
+    sheet_xml: str,
+    dv_block: Optional[str],
+    ext_block: Optional[str],
+    ns_pool: Dict[str, str],
+    literal: bool = False,
+) -> Tuple[str, List[str]]:
+    """Reinyecta en el XML de una hoja los bloques de validación y extensiones.
 
-    restored_dv = 0
-    restored_ext = 0
-    for sheet_name in set(original_dv_by_sheet) | set(original_extlst_by_sheet):
-        sheet_path = name_to_path_out.get(sheet_name)
-        if not sheet_path or sheet_path not in members:
-            continue
-        xml = members[sheet_path].decode("utf-8", "ignore")
-        new_xml = xml
-        ns_decls = original_ns_by_sheet.get(sheet_name, {})
+    Args:
+        sheet_xml: XML de la hoja guardada por openpyxl.
+        dv_block: Bloque `<dataValidations>` del original (o None).
+        ext_block: Bloque `<extLst>` del original (o None).
+        ns_pool: Declaraciones `{prefijo: uri}` disponibles para resolver prefijos.
+        literal: Estrategia "dura": escribe el bloque de validaciones original tal cual.
 
-        # 1) Listas de validación de datos estándar
-        dv_block = original_dv_by_sheet.get(sheet_name)
-        if dv_block:
-            candidate = _replace_or_insert_block(new_xml, _DATA_VALIDATIONS_RE, dv_block, _AFTER_DATA_VALIDATIONS)
-            if candidate != new_xml:
-                new_xml = candidate
-                restored_dv += 1
+    Returns:
+        Tupla (XML resultante, lista de problemas detectados).
+    """
+    problemas: List[str] = []
+    new_xml = sheet_xml
 
-        # 2) Extensiones de hoja (x14) — solo si sus prefijos son resolubles
-        ext_block = original_extlst_by_sheet.get(sheet_name)
-        if ext_block and not (_prefixes_used(ext_block) - set(ns_decls)):
+    if dv_block:
+        block = _build_data_validations_block(dv_block, new_xml, literal=literal)
+        if block:
+            new_xml = _replace_or_insert_block(
+                new_xml, _DATA_VALIDATIONS_RE, block, _AFTER_DATA_VALIDATIONS
+            )
+
+    if ext_block:
+        unknown = _prefixes_used(ext_block) - set(ns_pool)
+        if unknown:
+            problemas.append(
+                "no se pudieron declarar los prefijos de namespace "
+                + ", ".join(sorted(unknown))
+            )
+        else:
             candidate = _merge_extlst_into_sheet_xml(new_xml, ext_block)
-            if candidate is not None and candidate != new_xml:
+            if candidate is None:
+                problemas.append("no se pudo reinyectar el bloque extLst")
+            else:
                 new_xml = candidate
-                restored_ext += 1
 
-        if new_xml != xml:
-            new_xml = _ensure_ns_decls(new_xml, ns_decls)
-            members[sheet_path] = new_xml.encode("utf-8")
+    if new_xml != sheet_xml:
+        new_xml = _ensure_ns_decls(new_xml, ns_pool)
 
-    if restored_dv == 0 and restored_ext == 0:
-        return (0, 0)
+    return new_xml, problemas
 
-    # Reescribir el zip preservando el orden original de las partes
-    import tempfile as _tempfile
+
+def _defined_name_key(item: str) -> Tuple[str, str]:
+    """Clave de identidad de un `<definedName>`: (nombre en mayúsculas, hoja local)."""
+    name_m = re.search(r'\bname="([^"]*)"', item)
+    sheet_m = re.search(r'\blocalSheetId="([^"]*)"', item)
+    return (
+        (name_m.group(1) if name_m else "").upper(),
+        sheet_m.group(1) if sheet_m else "",
+    )
+
+
+def _insert_workbook_block(workbook_xml: str, block: str, after_tags) -> str:
+    """Inserta un bloque en `xl/workbook.xml` respetando el orden del esquema OOXML."""
+    pos = len(workbook_xml)
+    for tag in after_tags:
+        i = workbook_xml.find(tag)
+        if i != -1 and i < pos:
+            pos = i
+    if pos == len(workbook_xml):
+        i = workbook_xml.rfind("</workbook>")
+        if i != -1:
+            pos = i
+    return workbook_xml[:pos] + block + workbook_xml[pos:]
+
+
+def _restore_defined_names(
+    output_workbook_xml: Optional[str],
+    source_workbook_xml: Optional[str],
+) -> Tuple[Optional[str], int, List[str]]:
+    """Reincorpora al libro guardado los nombres definidos del original que falten.
+
+    Muchas listas desplegables usan un nombre definido como origen
+    (`<formula1>ListaSI</formula1>`). Si el nombre desaparece del libro, Excel deja
+    de mostrar la lista, por lo que se restauran los que falten sin eliminar ni
+    duplicar ninguno y sin reintroducir referencias a libros externos.
+
+    Returns:
+        Tupla (XML resultante, cantidad restaurada, lista de problemas).
+    """
+    if not output_workbook_xml or not source_workbook_xml:
+        return output_workbook_xml, 0, []
+
+    problemas: List[str] = []
+    try:
+        source_block_m = _DEFINED_NAMES_BLOCK_RE.search(source_workbook_xml)
+        if not source_block_m:
+            return output_workbook_xml, 0, []
+        source_items = _DEFINED_NAME_RE.findall(source_block_m.group(0))
+        if not source_items:
+            return output_workbook_xml, 0, []
+
+        target_block_m = _DEFINED_NAMES_BLOCK_RE.search(output_workbook_xml)
+        target_block = target_block_m.group(0) if target_block_m else ""
+        target_items = _DEFINED_NAME_RE.findall(target_block)
+
+        existing = {_defined_name_key(item) for item in target_items}
+        restored: List[str] = []
+        for item in source_items:
+            if _EXTERNAL_REF_RE.search(item):
+                # Nunca se reintroducen nombres apuntando a libros externos:
+                # quedarían colgantes y Excel pediría "reparar" el libro.
+                continue
+            key = _defined_name_key(item)
+            if not key[0] or key in existing:
+                continue
+            existing.add(key)
+            restored.append(item)
+
+        if not restored:
+            return output_workbook_xml, 0, problemas
+
+        if target_block and not target_block.endswith("/>"):
+            merged_block = target_block.replace(
+                "</definedNames>", "".join(restored) + "</definedNames>", 1
+            )
+            return output_workbook_xml.replace(target_block, merged_block, 1), len(restored), problemas
+
+        merged_block = "<definedNames>%s</definedNames>" % "".join(target_items + restored)
+        if target_block:
+            return output_workbook_xml.replace(target_block, merged_block, 1), len(restored), problemas
+
+        return _insert_workbook_block(output_workbook_xml, merged_block, _AFTER_DEFINED_NAMES), len(restored), problemas
+    except Exception as exc:  # noqa: BLE001 - nunca debe romper el cierre
+        problemas.append(f"no se pudieron restaurar los nombres definidos: {exc}")
+        return output_workbook_xml, 0, problemas
+
+
+def _read_zip_parts(path: Path) -> Tuple[Dict[str, bytes], Dict[str, "zipfile.ZipInfo"]]:
+    """Lee todas las partes de un .xlsx (contenido + metadatos de cada entrada)."""
+    with zipfile.ZipFile(path, "r") as zf:
+        members = {name: zf.read(name) for name in zf.namelist()}
+        infos = {info.filename: info for info in zf.infolist()}
+    return members, infos
+
+
+def _write_zip_parts(
+    path: Path,
+    members: Dict[str, bytes],
+    infos: Dict[str, "zipfile.ZipInfo"],
+) -> None:
+    """Reescribe un .xlsx preservando el orden y los metadatos de sus partes."""
     import os as _os
-    fd, tmp_name = _tempfile.mkstemp(suffix=".xlsx", dir=str(output_path.parent))
+    import tempfile as _tempfile
+
+    fd, tmp_name = _tempfile.mkstemp(suffix=".xlsx", dir=str(path.parent))
     _os.close(fd)
     tmp_path = Path(tmp_name)
     try:
         with zipfile.ZipFile(tmp_path, "w", zipfile.ZIP_DEFLATED) as zf_new:
-            for name in members:
+            for name, data in members.items():
                 info = infos.get(name)
-                # Preservar compresión/timestamp cuando sea posible
                 if info is not None:
-                    zf_new.writestr(info, members[name])
+                    zf_new.writestr(info, data)
                 else:
-                    zf_new.writestr(name, members[name])
-        _os.replace(tmp_path, output_path)
+                    zf_new.writestr(name, data)
+        _os.replace(tmp_path, path)
     finally:
         if tmp_path.exists():
             try:
@@ -453,19 +673,204 @@ def _restore_sheet_blocks(
             except OSError:
                 pass
 
-    return restored_dv, restored_ext
+
+def preserve_sheet_data_blocks(
+    output_path: Path | str,
+    source_path: Path | str,
+) -> SheetBlocksReport:
+    """Restaura y VERIFICA las listas de validación de datos del archivo original.
+
+    Debe invocarse inmediatamente después de `wb.save(...)`, usando como
+    `source_path` la copia de seguridad íntegra creada antes de la modificación.
+
+    Restaura, hoja por hoja:
+      • El bloque `<dataValidations>` (listas de validación estándar).
+      • El bloque `<extLst>` (validaciones modernas `x14:dataValidations`).
+    Y a nivel de libro:
+      • Los `<definedNames>` que sirven de origen a algunas listas.
+
+    Finalmente compara huella por huella (rango + tipo + fórmula) que ninguna
+    validación del original se haya perdido. Si detecta pérdidas reintenta con una
+    estrategia "dura" y, si aun así falla, lo reporta en `problemas`.
+
+    Args:
+        output_path: Ruta del archivo recién guardado por openpyxl (se reescribe).
+        source_path: Ruta del original íntegro (respaldo) con las validaciones.
+
+    Returns:
+        SheetBlocksReport con los conteos antes/después y los problemas detectados.
+    """
+    out_path = Path(output_path)
+    src_path = Path(source_path)
+    report = SheetBlocksReport(archivo=out_path.name)
+
+    if not out_path.exists() or not src_path.exists():
+        report.problemas.append(
+            "No se pudo verificar la preservación de listas de validación "
+            "(falta el archivo guardado o su respaldo)."
+        )
+        return report
+
+    # ---------------------------------------------------------
+    # 1. Extraer bloques y huellas del original (respaldo íntegro)
+    # ---------------------------------------------------------
+    try:
+        with zipfile.ZipFile(src_path, "r") as zf_src:
+            source_workbook_xml = zf_src.read("xl/workbook.xml").decode("utf-8", "ignore")
+            source_map = _read_sheet_names_by_path(zf_src)
+            # Declaraciones de namespace del libro (algunas extensiones usan prefijos
+            # declarados sólo en la raíz de xl/workbook.xml, p. ej. `xr`).
+            workbook_ns = _collect_ns_decls(source_workbook_xml)
+            blocks: Dict[str, Dict[str, Any]] = {}
+            for sheet_name, sheet_path in source_map.items():
+                try:
+                    src_xml = zf_src.read(sheet_path).decode("utf-8", "ignore")
+                except KeyError:
+                    continue
+                dv_m = _DATA_VALIDATIONS_RE.search(src_xml)
+                ext_m = _SHEET_EXTLST_RE.search(src_xml)
+                if not dv_m and not ext_m:
+                    continue
+                ns_pool = dict(workbook_ns)
+                ns_pool.update(_collect_ns_decls(src_xml))
+                blocks[sheet_name] = {
+                    "dv": dv_m.group(0) if dv_m else None,
+                    "ext": ext_m.group(0) if ext_m else None,
+                    "ns": ns_pool,
+                    "fingerprints": _validation_fingerprints(src_xml),
+                }
+    except Exception as exc:  # noqa: BLE001
+        report.problemas.append(f"No se pudo leer el respaldo '{src_path.name}': {exc}")
+        return report
+
+    report.validaciones_original = sum(
+        len(_DATA_VALIDATION_RE.findall(blk["dv"] or "")) for blk in blocks.values()
+    )
+    report.validaciones_x14_original = sum(
+        len(_X14_VALIDATION_RE.findall(blk["ext"] or "")) for blk in blocks.values()
+    )
+    report.hojas_con_validaciones = sum(1 for blk in blocks.values() if blk["fingerprints"])
+
+    if not blocks:
+        return report
+
+    # ---------------------------------------------------------
+    # 2. Aplicar la restauración sobre el archivo guardado
+    # ---------------------------------------------------------
+    try:
+        out_members, out_infos = _read_zip_parts(out_path)
+    except Exception as exc:  # noqa: BLE001
+        report.problemas.append(f"No se pudo leer el archivo guardado '{out_path.name}': {exc}")
+        return report
+
+    out_map = _read_sheet_names_by_path_dict(out_members)
+
+    def _build_candidate(literal: bool) -> Tuple[Dict[str, bytes], List[str], int]:
+        """Genera una versión candidata del archivo con los bloques reinyectados."""
+        candidate = dict(out_members)
+        problemas: List[str] = []
+        restored_names = 0
+
+        for sheet_name, blk in blocks.items():
+            sheet_path = out_map.get(sheet_name)
+            if not sheet_path or sheet_path not in candidate:
+                problemas.append(
+                    f"'{sheet_name}': la hoja no existe en el archivo guardado; "
+                    "no se pudieron restaurar sus listas de validación"
+                )
+                continue
+            current = candidate[sheet_path].decode("utf-8", "ignore")
+            new_xml, sheet_problems = _apply_preserved_blocks(
+                current, blk["dv"], blk["ext"], blk["ns"], literal=literal
+            )
+            problemas.extend(f"'{sheet_name}': {p}" for p in sheet_problems)
+            if new_xml != current:
+                if _is_well_formed(new_xml):
+                    candidate[sheet_path] = new_xml.encode("utf-8")
+                else:
+                    problemas.append(
+                        f"'{sheet_name}': el XML resultante no es válido; "
+                        "se conserva la versión guardada por openpyxl"
+                    )
+
+        wb_key = "xl/workbook.xml"
+        if wb_key in candidate:
+            current_wb = candidate[wb_key].decode("utf-8", "ignore")
+            new_wb, restored_names, wb_problems = _restore_defined_names(
+                current_wb, source_workbook_xml
+            )
+            problemas.extend(wb_problems)
+            if new_wb is not None and new_wb != current_wb:
+                if _is_well_formed(new_wb):
+                    candidate[wb_key] = new_wb.encode("utf-8")
+                else:
+                    problemas.append(
+                        "'xl/workbook.xml': los nombres definidos no se pudieron restaurar "
+                        "(XML resultante inválido)"
+                    )
+                    restored_names = 0
+
+        # Verificación huella por huella: ninguna validación debe faltar.
+        for sheet_name, blk in blocks.items():
+            sheet_path = out_map.get(sheet_name)
+            if not sheet_path or sheet_path not in candidate:
+                continue
+            result_xml = candidate[sheet_path].decode("utf-8", "ignore")
+            missing = blk["fingerprints"] - _validation_fingerprints(result_xml)
+            if missing:
+                problemas.append(
+                    f"'{sheet_name}': {len(missing)} validación(es) de datos "
+                    "no quedaron en el archivo final"
+                )
+        return candidate, problemas, restored_names
+
+    candidate, problemas, nombres_restaurados = _build_candidate(literal=False)
+    if problemas:
+        # Estrategia "dura": escribir el bloque original literal (sin combinar).
+        strict_candidate, strict_problemas, strict_nombres = _build_candidate(literal=True)
+        if len(strict_problemas) < len(problemas):
+            candidate, problemas, nombres_restaurados = (
+                strict_candidate,
+                strict_problemas,
+                strict_nombres,
+            )
+
+    report.nombres_definidos_restaurados = nombres_restaurados
+    # Se eliminan mensajes repetidos conservando el orden original.
+    report.problemas.extend(dict.fromkeys(problemas))
+
+    # ---------------------------------------------------------
+    # 3. Escribir el resultado (solo si hubo cambios) y devolver conteos
+    # ---------------------------------------------------------
+    sheets_involved = {out_map[name] for name in blocks if name in out_map}
+    report.validaciones_resultado = sum(
+        len(_DATA_VALIDATION_RE.findall(candidate[p].decode("utf-8", "ignore")))
+        for p in sheets_involved
+        if p in candidate
+    )
+    report.validaciones_x14_resultado = sum(
+        len(_X14_VALIDATION_RE.findall(candidate[p].decode("utf-8", "ignore")))
+        for p in sheets_involved
+        if p in candidate
+    )
+
+    if any(candidate.get(k) != out_members.get(k) for k in set(candidate) | set(out_members)):
+        _write_zip_parts(out_path, candidate, out_infos)
+
+    return report
 
 
-def _read_sheet_names_by_path_dict(members: Dict[str, bytes]) -> Dict[str, str]:
-    """Igual que `_read_sheet_names_by_path` pero sobre un dict de partes ya leídas."""
-    class _MemZip:
-        def __init__(self, parts: Dict[str, bytes]):
-            self._parts = parts
+def _restore_sheet_blocks(
+    output_path: Path | str,
+    source_path: Path | str,
+) -> tuple:
+    """Compatibilidad histórica: devuelve (validaciones estándar, validaciones x14).
 
-        def read(self, name: str) -> bytes:
-            return self._parts[name]
-
-    return _read_sheet_names_by_path(_MemZip(members))
+    Mantiene la firma anterior para no romper llamadas existentes; toda la lógica e
+    información detallada vive en :func:`preserve_sheet_data_blocks`.
+    """
+    report = preserve_sheet_data_blocks(output_path, source_path)
+    return (report.validaciones_resultado, report.validaciones_x14_resultado)
 
 
 def _merge_extlst_into_sheet_xml(sheet_xml: str, source_extlst: str) -> Optional[str]:
@@ -474,31 +879,44 @@ def _merge_extlst_into_sheet_xml(sheet_xml: str, source_extlst: str) -> Optional
     - Si la hoja guardada no tiene `extLst`, se inserta el original antes de `</worksheet>`.
     - Si ya tiene `extLst`, se añaden dentro los `<ext>` del original que no estén
       ya presentes (comparando por `uri`), para evitar duplicados.
+    - Se admite la forma autocerrada `<extLst/>` escrita por algunos generadores.
 
     Returns:
         El XML resultante, o None si no se pudo procesar.
     """
     try:
         existing_m = _SHEET_EXTLST_RE.search(sheet_xml)
+        source_exts = _EXT_BLOCK_RE.findall(source_extlst)
+
         if not existing_m:
             if "</worksheet>" not in sheet_xml:
                 return None
             return sheet_xml.replace("</worksheet>", source_extlst + "</worksheet>", 1)
+
+        if not source_exts:
+            return sheet_xml
 
         existing_extlst = existing_m.group(0)
         existing_uris = {u.upper() for u in _EXT_URI_RE.findall(existing_extlst)}
 
         # Bloques <ext> del origen que aún no están presentes
         missing_exts = [
-            block for block in _EXT_BLOCK_RE.findall(source_extlst)
+            block for block in source_exts
             if not any(u.upper() in existing_uris for u in _EXT_URI_RE.findall(block))
         ]
         if not missing_exts:
             return sheet_xml
 
-        merged_extlst = existing_extlst.replace("</extLst>", "".join(missing_exts) + "</extLst>", 1)
+        if existing_extlst.endswith("/>"):
+            # <extLst/> vacío (autocerrado): se abre y se le añaden las extensiones.
+            opened = existing_extlst[:-2].rstrip() + ">"
+            merged_extlst = opened + "".join(missing_exts) + "</extLst>"
+        else:
+            merged_extlst = existing_extlst.replace(
+                "</extLst>", "".join(missing_exts) + "</extLst>", 1
+            )
         return sheet_xml.replace(existing_extlst, merged_extlst, 1)
-    except Exception:
+    except Exception:  # noqa: BLE001
         return None
 
 
@@ -603,6 +1021,42 @@ def restore_last_backup(
             }
 
     return resultados
+
+
+def _preserve_sheet_blocks_and_report(
+    report: "DirectUpdateReport",
+    etiqueta: str,
+    output_path: Path | str,
+    source_path: Path | str,
+) -> SheetBlocksReport:
+    """Restaura y verifica las listas de validación de un archivo ya guardado.
+
+    Nunca lanza excepción: cualquier fallo se registra como advertencia en el
+    informe para que el usuario lo vea en consola (y pueda restaurar el respaldo).
+
+    Args:
+        report: Informe de la actualización directa (se completa en el lugar).
+        etiqueta: Nombre legible del archivo para el informe (ej. 'Sistematización').
+        output_path: Archivo recién guardado por openpyxl.
+        source_path: Respaldo íntegro creado antes de la modificación.
+
+    Returns:
+        El `SheetBlocksReport` con el detalle de la preservación.
+    """
+    try:
+        info = preserve_sheet_data_blocks(output_path, source_path)
+    except Exception as exc:  # noqa: BLE001 - la preservación nunca debe romper el cierre
+        mensaje = (
+            f"{etiqueta}: no se pudo verificar la preservación de las listas de "
+            f"validación de datos ({exc})."
+        )
+        report.warnings.append(mensaje)
+        return SheetBlocksReport(archivo=Path(output_path).name, problemas=[mensaje])
+
+    report.validaciones_preservadas[etiqueta] = info.resumen()
+    for problema in info.problemas:
+        report.warnings.append(f"{etiqueta}: {problema}")
+    return info
 
 
 def apply_direct_cierre(
@@ -781,7 +1235,9 @@ def apply_direct_cierre(
         wb_sist.close()
         # Preservar las extensiones de hoja (listas de validación x14, formato
         # condicional moderno, etc.) que openpyxl descarta al guardar.
-        _restore_sheet_blocks(path_sist, backup_by_role.get("sistematizacion", path_sist))
+        _preserve_sheet_blocks_and_report(
+            report, "Sistematización", path_sist, backup_by_role.get("sistematizacion", path_sist)
+        )
     except Exception as e:
         report.errors.append(f"Error al actualizar Sistematización: {e}")
 
@@ -911,7 +1367,9 @@ def apply_direct_cierre(
         wb_cert.save(path_cert)
         wb_cert.close()
         # Preservar las extensiones de hoja que openpyxl descarta al guardar.
-        _restore_sheet_blocks(path_cert, backup_by_role.get("certificados", path_cert))
+        _preserve_sheet_blocks_and_report(
+            report, "Certificados", path_cert, backup_by_role.get("certificados", path_cert)
+        )
     except Exception as e:
         report.errors.append(f"Error al anexar en Certificados: {e}")
 
@@ -967,7 +1425,9 @@ def apply_direct_cierre(
         wb_ctrl.save(path_ctrl)
         wb_ctrl.close()
         # Preservar las extensiones de hoja que openpyxl descarta al guardar.
-        _restore_sheet_blocks(path_ctrl, backup_by_role.get("control_aulas", path_ctrl))
+        _preserve_sheet_blocks_and_report(
+            report, "Control de Aulas", path_ctrl, backup_by_role.get("control_aulas", path_ctrl)
+        )
     except Exception as e:
         report.errors.append(f"Error al actualizar Control de Aulas: {e}")
 

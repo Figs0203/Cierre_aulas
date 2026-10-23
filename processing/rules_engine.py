@@ -33,6 +33,7 @@ from normalization.dates import (
     format_certificate_date,
     format_ciclo_date,
     get_semester,
+    parse_date,
 )
 from normalization.text import (
     format_ciclo,
@@ -104,6 +105,28 @@ def evaluate_certification_status(
     return "Aprobó", promedio
 
 
+def _format_fecha_envio_sistematizacion(value: Any) -> str:
+    """Formatea la fecha de envío para la columna de Sistematización.
+
+    Formato oficial confirmado: 'DD-mes-AAAA' con mes abreviado en minúsculas
+    (ej. '24-mar-2026'), idéntico al usado en la columna 'Fecha de envío' del
+    archivo de Certificados.
+
+    Se evita deliberadamente el `str(datetime)` (que devolvía
+    '2026-03-24 00:00:00', arrastrando la hora en ceros).
+
+    Args:
+        value: Fecha (date/datetime), cadena de fecha o serial de Excel.
+
+    Returns:
+        Cadena 'DD-mes-AAAA' o '' si el valor no es una fecha interpretable.
+    """
+    fecha = parse_date(value)
+    if fecha is None:
+        return ""
+    return format_certificate_date(fecha)
+
+
 def apply_rules_to_match(
     match: StudentMatch,
     codigo_curso: str,
@@ -156,6 +179,11 @@ def apply_rules_to_match(
     elif aula_meta and aula_meta.fecha_fin_2 and aula_meta.fecha_fin_2.value:
         f_fin = aula_meta.fecha_fin_2.value
 
+    # La columna 'Fecha de envío' de Sistematización se escribe como fecha oficial
+    # 'DD-mes-AAAA' (ej. '24-mar-2026'), NUNCA como el repr de un datetime
+    # (ej. '2026-03-24 00:00:00'), que además arrastraba la hora en ceros.
+    fecha_envio_txt = _format_fecha_envio_sistematizacion(f_fin)
+
     # Actualizar raw_row_data para reproducción exacta de las columnas de Sistematización
     col_map = es.column_indices if es.column_indices else {}
     c_m1 = col_map.get("modulo_1", 45)
@@ -187,5 +215,6 @@ def apply_rules_to_match(
     es.raw_row_data[c_elab] = es.elaboro_certificado_calculado
     es.raw_row_data[c_cod] = es.codigo_certificado_calculado
     es.raw_row_data[c_env] = es.envio_certificado_calculado
-    if f_fin:
-        es.raw_row_data[c_fenv] = str(f_fin).upper()
+    if fecha_envio_txt:
+        es.fecha_envio_calculada = fecha_envio_txt
+        es.raw_row_data[c_fenv] = fecha_envio_txt

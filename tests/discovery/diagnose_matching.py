@@ -436,6 +436,10 @@ def simulate_full_cierre(file_paths: dict, aula: str) -> None:
             metadatos_control=result.metadatos_control, start_consecutivo=result.start_consecutivo,
         )
         lines.append(f"Cierre simulado. Errores: {report.errors or 'ninguno'}")
+        if report.warnings:
+            lines.append(f"Advertencias: {report.warnings}")
+        for resumen in report.validaciones_preservadas.values():
+            lines.append(f"  {resumen}")
 
         for role in ("sistematizacion", "certificados", "control_aulas"):
             p = copies.get(role)

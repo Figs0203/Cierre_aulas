@@ -356,8 +356,16 @@ class TestFormatoFeedbackAjustes:
         res = AulaCierreResult(aula=AulaMetadata(), clases=[cg1, cg2])
 
         meta_dict = {
-            "5535": AulaMetadata(docente_principal=tv("Manuela Restrepo")),
-            "5536": AulaMetadata(docente_principal=tv("Manuela Restrepo")),
+            # fecha_fin es necesaria para las columnas Ciclo, Año, Semestre y Fecha de envío
+            # de la hoja CERTIFICADOS (regla del semestre: nov–abr = 1, may–oct = 2).
+            "5535": AulaMetadata(
+                docente_principal=tv("Manuela Restrepo"),
+                fecha_fin=tv(date(2026, 4, 27)),
+            ),
+            "5536": AulaMetadata(
+                docente_principal=tv("Manuela Restrepo"),
+                fecha_fin=tv(date(2026, 4, 27)),
+            ),
         }
 
         out_path = generate_cierre_excel(
@@ -418,3 +426,155 @@ class TestFormatoFeedbackAjustes:
         assert ws_sist.cell(2, 5).value == "jperez@eafit.edu.co"
 
         wb.close()
+
+
+    def test_archivo_auxiliar_conserva_la_fecha_de_envio_en_minusculas(self, tmp_path):
+        """En la hoja SISTEMATIZACION del archivo auxiliar la fecha no se pasa a MAYÚSCULAS."""
+        import openpyxl
+        from core.models import (
+            AulaCierreResult,
+            AulaMetadata,
+            ClaseGroup,
+            EstudianteNotas,
+            EstudianteSistematizacion,
+            StudentMatch,
+            TracedValue,
+        )
+        from output.excel_generator import generate_cierre_excel
+
+        def tv(val):
+            return TracedValue(
+                value=val,
+                source_file="S",
+                source_sheet="F",
+                source_column="C",
+                source_col_idx=1,
+                source_row=1,
+            )
+
+        es = EstudianteSistematizacion(
+            row_number=2,
+            nombres=tv("Ana"),
+            apellidos=tv("Lopez"),
+            clase=tv("5535"),
+            documento=tv("1002"),
+            correo=tv("alopez@eafit.edu.co"),
+            estado_calculado="Aprobó",
+            column_indices={"correo": 3, "fecha_envio": 6},
+            raw_row_data={1: "Ana", 2: "Lopez", 3: "alopez@eafit.edu.co",
+                          4: "Aprobó", 5: "ABBUEI205", 6: "24-mar-2026"},
+        )
+        match = StudentMatch(
+            estudiante_sist=es,
+            estudiante_nota=EstudianteNotas(row_number=2),
+            match_key="doc",
+            match_value="1002",
+        )
+        res = AulaCierreResult(
+            aula=AulaMetadata(), clases=[ClaseGroup(clase_id="5535", matches=[match])]
+        )
+
+        out_path = generate_cierre_excel(
+            result=res,
+            codigo_curso="ABBUEI205",
+            sist_headers=["Nombres", "Apellidos", "Correo", "Estado", "Código", "Fecha de envío"],
+            start_consecutivo=1,
+            output_dir=tmp_path,
+            metadatos_control={"5535": AulaMetadata(fecha_fin=tv(date(2026, 3, 24)))},
+        )
+
+        wb = openpyxl.load_workbook(out_path, data_only=True)
+        ws_sist = wb["SISTEMATIZACION"]
+        assert ws_sist.cell(2, 1).value == "ANA"
+        assert ws_sist.cell(2, 6).value == "24-mar-2026"
+        wb.close()
+
+
+# ============================================================
+# COLUMNA 'FECHA DE ENVÍO' DE SISTEMATIZACIÓN (formato oficial)
+# ============================================================
+
+
+class TestFechaEnvioSistematizacion:
+    """La columna 'Fecha de envío' de Sistematización debe quedar como 'DD-mes-AAAA'.
+
+    Regresión: antes se escribía `str(datetime)`, dejando '2026-04-27 00:00:00'
+    (fecha + hora en ceros). Ahora debe quedar '27-abr-2026'.
+    """
+
+    def test_datetime_con_hora_cero(self):
+        from processing.rules_engine import _format_fecha_envio_sistematizacion
+
+        valor = _format_fecha_envio_sistematizacion(datetime(2026, 4, 27, 0, 0, 0))
+        assert valor == "27-abr-2026"
+        assert "00:00" not in valor
+
+    def test_datetime_con_hora_no_cero_descarta_la_hora(self):
+        from processing.rules_engine import _format_fecha_envio_sistematizacion
+
+        assert _format_fecha_envio_sistematizacion(datetime(2026, 3, 24, 15, 42, 7)) == "24-mar-2026"
+
+    def test_date_nativo(self):
+        from processing.rules_engine import _format_fecha_envio_sistematizacion
+
+        assert _format_fecha_envio_sistematizacion(date(2026, 3, 24)) == "24-mar-2026"
+
+    def test_cadenas_de_fecha_soportadas(self):
+        from processing.rules_engine import _format_fecha_envio_sistematizacion
+
+        assert _format_fecha_envio_sistematizacion("24/03/2026") == "24-mar-2026"
+        assert _format_fecha_envio_sistematizacion("2026-03-24") == "24-mar-2026"
+        assert _format_fecha_envio_sistematizacion("24-mar-2026") == "24-mar-2026"
+
+    def test_serial_de_excel(self):
+        from processing.rules_engine import _format_fecha_envio_sistematizacion
+
+        # 46105 = 2026-03-24 (sistema de fechas de Excel)
+        assert _format_fecha_envio_sistematizacion(46105) == "24-mar-2026"
+
+    def test_valores_no_interpretables_retornan_vacio(self):
+        from processing.rules_engine import _format_fecha_envio_sistematizacion
+
+        assert _format_fecha_envio_sistematizacion(None) == ""
+        assert _format_fecha_envio_sistematizacion("") == ""
+        assert _format_fecha_envio_sistematizacion("pendiente") == ""
+
+    def test_apply_rules_escribe_la_fecha_formateada(self):
+        """Integración: el motor de reglas deja 'DD-mes-AAAA' en raw_row_data."""
+        from core.models import (
+            AulaMetadata,
+            EstudianteNotas,
+            EstudianteSistematizacion,
+            StudentMatch,
+            TracedValue,
+        )
+        from processing.rules_engine import apply_rules_to_match
+
+        def tv(val):
+            return TracedValue(
+                value=val,
+                source_file="S",
+                source_sheet="F",
+                source_column="C",
+                source_col_idx=1,
+                source_row=1,
+            )
+
+        es = EstudianteSistematizacion(
+            row_number=2,
+            nombres=tv("Ana"),
+            apellidos=tv("Lopez"),
+            clase=tv("5535"),
+            documento=tv("1002"),
+            correo=tv("alopez@eafit.edu.co"),
+            tipo_grupo=tv("Pregrado"),
+            column_indices={"fecha_envio": 55, "promedio": 50, "estado": 51},
+        )
+        en = EstudianteNotas(row_number=2, nota_final=tv(4.5), calificaciones_modulos={"modulo_1": tv(4.5)})
+        match = StudentMatch(estudiante_sist=es, estudiante_nota=en, match_key="doc", match_value="1002")
+        meta = AulaMetadata(fecha_fin=tv(datetime(2026, 4, 27, 0, 0, 0)))
+
+        apply_rules_to_match(match, codigo_curso="ABBUEI205", clase_id="5535", aula_meta=meta)
+
+        assert es.raw_row_data[55] == "27-abr-2026"
+        assert es.fecha_envio_calculada == "27-abr-2026"

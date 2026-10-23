@@ -363,12 +363,26 @@ def handle_direct_cierre_mode():
         print(f"   • Sistematización — Celdas preexistentes protegidas (intactas): {report.sistematizacion_untouched_cells}")
         print(f"   • Certificados — Filas de aprobados anexadas al final: {report.certificados_rows_appended}")
         print(f"   • Control de Aulas — Clases marcadas con fecha de cierre: {report.control_aulas_classes_marked}")
+        print("\n🔽 Listas de validación de datos (listas desplegables) — verificación:")
+        if report.validaciones_preservadas:
+            for resumen in report.validaciones_preservadas.values():
+                print(f"   • {resumen}")
+        else:
+            print("   • (Los archivos oficiales no contenían listas de validación que preservar.)")
         print("\n✅ Todos los archivos oficiales han sido actualizados de forma segura.")
     else:
         print("🔴 SE COMPLETÓ CON ADVERTENCIAS O ERRORES:")
         for err in report.errors:
             print(f"   • {err}")
+    if report.warnings:
+        print("\n⚠️ ADVERTENCIAS (requieren revisión):")
+        for adv in report.warnings:
+            print(f"   • {adv}")
+        print("   ↳ Si alguna lista de validación no se pudo preservar, restaure el último")
+        print("     respaldo con la opción [6] y reporte el caso.")
     print("=" * 76)
+
+
 def handle_restore_backup_mode():
     print("\n" + "=" * 76)
     print("INICIANDO MODO 6: RESTAURAR ÚLTIMO BACKUP EN ARCHIVOS OFICIALES")
