@@ -209,6 +209,106 @@ class TestPreservacionListasDeValidacion(unittest.TestCase):
             self.assertNotIn("00:00", str(valor))
             self.assertNotIn(":", str(valor))
 
+    def test_sqref_multirrango_no_se_confunde_con_prefijo_de_namespace(self):
+        """Regresión real (CMI): `sqref="B2:B9 AD2:AF2"` se tomaba como prefijos.
+
+        El detector de prefijos confundía los rangos de celdas de un `sqref`
+        multirrango (`AD2:AF2`) con prefijos de namespace, por lo que el `extLst`
+        completo se descartaba y se perdían las 8 listas modernas (x14).
+        """
+        from output.direct_updater import _prefixes_used
+
+        # El fragmento sólo usa dos prefijos reales: x14 y xm
+        frag = (
+            '<extLst><ext uri="{CCE6A557-97BC-4b89-ADB6-D9C93CAAB3DF}">'
+            '<x14:dataValidations count="1">'
+            '<x14:dataValidation type="list">'
+            '<x14:formula1><xm:f>Listas!$A$1:$A$3</xm:f></x14:formula1>'
+            '<xm:sqref>B2:B9 AD2:AF2 AF2:AG5</xm:sqref>'
+            '</x14:dataValidation></x14:dataValidations></ext></extLst>'
+        )
+        self.assertEqual(_prefixes_used(frag), {"x14", "xm"})
+
+        with tempfile.TemporaryDirectory() as tmp_str:
+            tmpdir = Path(tmp_str)
+            files = _mock_files(tmpdir)
+            path_sist = files["sistematizacion"]
+            backup = tmpdir / "respaldo.xlsx"
+
+            x14_multi = (
+                '<extLst><ext uri="{CCE6A557-97BC-4b89-ADB6-D9C93CAAB3DF}">'
+                '<x14:dataValidations count="1">'
+                '<x14:dataValidation type="list" allowBlank="1">'
+                '<x14:formula1><xm:f>Listas!$A$1:$A$3</xm:f></x14:formula1>'
+                '<xm:sqref>B2:B9 AD2:AF2</xm:sqref></x14:dataValidation>'
+                '</x14:dataValidations></ext></extLst>'
+            )
+            _inject(
+                path_sist, _SHEET_KEY,
+                lambda xml: _add_root_ns(xml).replace("</worksheet>", x14_multi + "</worksheet>"),
+            )
+            shutil.copy2(path_sist, backup)
+
+            wb = openpyxl.load_workbook(path_sist)
+            wb.save(path_sist)  # openpyxl descarta el extLst
+            wb.close()
+
+            info = preserve_sheet_data_blocks(path_sist, backup)
+            self.assertEqual(info.problemas, [], info.problemas)
+            self.assertEqual(info.validaciones_x14_original, 1)
+            self.assertEqual(info.validaciones_x14_resultado, 1)
+
+            content = _read_part(path_sist, _SHEET_KEY)
+            self.assertIn("x14:dataValidations", content)
+            self.assertIn("B2:B9 AD2:AF2", content)
+
+    def test_no_duplica_listas_que_openpyxl_reescribe(self):
+        """Regresión real: openpyxl normaliza atributos y la unión duplicaba listas.
+
+        openpyxl reescribe `<dataValidation>` (añade showDropDown="0", reordena
+        atributos, re-codifica entidades). Al combinar bloques por texto se
+        contaban como distintas y las listas se duplicaban (3→6 y 7→14).
+        """
+        with tempfile.TemporaryDirectory() as tmp_str:
+            tmpdir = Path(tmp_str)
+            files = _mock_files(tmpdir)
+            path_sist = files["sistematizacion"]
+            backup = tmpdir / "respaldo.xlsx"
+
+            dv_block = (
+                '<dataValidations count="2">'
+                '<dataValidation type="list" allowBlank="1" showInputMessage="1" '
+                'showErrorMessage="1" errorTitle="Valor no válido" '
+                'error="Seleccione de la lista" promptTitle="Seleccione" '
+                'prompt="Elija un valor" sqref="N2:N500">'
+                '<formula1>&quot;SI,NO&quot;</formula1></dataValidation>'
+                '<dataValidation type="list" allowBlank="1" sqref="O2:O500">'
+                '<formula1>ListaSI</formula1></dataValidation></dataValidations>'
+            )
+            _inject(
+                path_sist, _SHEET_KEY,
+                lambda xml: xml.replace("<pageMargins", dv_block + "<pageMargins", 1),
+            )
+            shutil.copy2(path_sist, backup)
+
+            # openpyxl reescribe el bloque (atributos normalizados y reordenados)
+            wb = openpyxl.load_workbook(path_sist)
+            wb.save(path_sist)
+            wb.close()
+            self.assertEqual(_read_part(path_sist, _SHEET_KEY).count("<dataValidation "), 2)
+
+            info = preserve_sheet_data_blocks(path_sist, backup)
+            self.assertEqual(info.problemas, [], info.problemas)
+            self.assertEqual(info.validaciones_original, 2)
+            self.assertEqual(info.validaciones_resultado, 2)
+
+            content = _read_part(path_sist, _SHEET_KEY)
+            self.assertEqual(content.count("<dataValidation "), 2)
+            self.assertEqual(content.count("<dataValidations"), 1)
+            # El bloque debe quedar exactamente como el del respaldo
+            self.assertIn('errorTitle="Valor no válido"', content)
+            self.assertIn("&quot;SI,NO&quot;", content)
+
     def test_preservacion_idempotente_sin_duplicar(self):
         """Aplicar la preservación dos veces no duplica ni pierde validaciones."""
         with tempfile.TemporaryDirectory() as tmp_str:

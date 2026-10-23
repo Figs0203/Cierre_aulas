@@ -221,15 +221,18 @@ def _resolve_external_link_formulas(wb: openpyxl.Workbook, source_path: Path | s
 #     listas desplegables (p. ej. `formula1="ListaSI"`).
 #
 # Estrategia (a prueba de pérdidas):
-#   1. Se extraen los bloques del respaldo íntegro del archivo original.
-#   2. Se COMBINAN con los del archivo guardado por openpyxl (unión sin duplicar),
-#      de modo que nunca se pierda una validación presente en cualquiera de los dos.
+#   1. Se extraen los bloques del respaldo íntegro del archivo original, que es la
+#      fuente de verdad: openpyxl sólo refleja lo que leyó, nunca añade listas.
+#   2. Se REESCRIBEN en el archivo guardado (reemplazando lo que haya escrito
+#      openpyxl, que normaliza atributos). No se combinan por texto: hacerlo
+#      duplicaba las listas (3→6, 7→14) porque openpyxl reescribe cada
+#      `<dataValidation>` (agrega `showDropDown="0"`, reordena atributos, etc.).
 #   3. Se reinyectan respetando el orden estricto del esquema OOXML y declarando
-#      los namespaces necesarios en la raíz del worksheet.
+#      los namespaces necesarios en la raíz del worksheet (incluidas las URIs
+#      conocidas de Excel si la declaración se perdió).
 #   4. Se VERIFICA huella por huella (tipo + rango + fórmula) que ninguna validación
-#      del original se haya perdido. Si se detecta alguna pérdida se reintenta con
-#      una estrategia "dura" (bloque original literal) y, si aun así falla, se
-#      informa explícitamente al usuario en lugar de fallar en silencio.
+#      del original se haya perdido; si algo no cuadra se informa explícitamente
+#      al usuario en lugar de fallar en silencio.
 
 # Bloque <extLst> de una hoja de cálculo (no anidado). Acepta la forma autocerrada.
 _SHEET_EXTLST_RE = re.compile(r"<extLst\b[^>]*>.*?</extLst>|<extLst\b[^>]*/>", re.DOTALL)
@@ -306,18 +309,55 @@ def _collect_ns_decls(xml: str) -> Dict[str, str]:
     return {m.group(1): m.group(2) for m in _NS_DECL_RE.finditer(xml)}
 
 
-# Prefijos usados en nombres de elementos (<x14:foo>) y atributos (attr:foo="...").
-# Se exige una letra tras ':' para no confundir URIs (p. ej. "http://").
+# Prefijos usados en nombres de elementos (<x14:foo>) y de atributos (x14:foo="...").
+# Reglas para no confundir datos con prefijos:
+#   • Un elemento con prefijo siempre empieza con '<prefijo:'.
+#   • Un atributo con prefijo va precedido de espacio y SIEMPRE lleva '=' tras el
+#     nombre local. Sin exigir el '=' se confundían rangos de celdas de un `sqref`
+#     multirrango (p. ej. "B2:B9 AD2:AF2") con prefijos de namespace, lo que hacía
+#     que se descartara el `extLst` completo y se perdieran las listas modernas.
 _ELEM_PREFIX_RE = re.compile(r"</?([A-Za-z_][\w.\-]*):[A-Za-z_]")
-_ATTR_PREFIX_RE = re.compile(r"\s([A-Za-z_][\w.\-]*):[A-Za-z_]")
+_ATTR_PREFIX_RE = re.compile(r"\s([A-Za-z_][\w.\-]*):([A-Za-z_][\w.\-]*)\s*=")
+
+# Prefijos implícitos del estándar XML: siempre están declarados.
+_IMPLICIT_PREFIXES = frozenset({"xml", "xmlns"})
+
+# URIs de los prefijos usados por Excel cuando las validaciones modernas no traen
+# la declaración `xmlns:` (o cuando se perdió al guardar). Sirven de red de
+# seguridad para no descartar un bloque por "prefijo no declarado".
+_KNOWN_NS_URIS = {
+    "x14": "http://schemas.microsoft.com/office/spreadsheetml/2009/9/main",
+    "x14ac": "http://schemas.microsoft.com/office/spreadsheetml/2009/9/ac",
+    "x15": "http://schemas.microsoft.com/office/spreadsheetml/2010/11/main",
+    "x15ac": "http://schemas.microsoft.com/office/spreadsheetml/2010/11/ac",
+    "xm": "http://schemas.microsoft.com/office/excel/2006/main",
+    "xr": "http://schemas.microsoft.com/office/spreadsheetml/2014/revision",
+    "xr2": "http://schemas.microsoft.com/office/spreadsheetml/2015/revision2",
+    "xr3": "http://schemas.microsoft.com/office/spreadsheetml/2016/revision3",
+    "mc": "http://schemas.openxmlformats.org/markup-compatibility/2006",
+    "a14": "http://schemas.microsoft.com/office/drawing/2010/main",
+    "r": "http://schemas.openxmlformats.org/officeDocument/2006/relationships",
+}
 
 
 def _prefixes_used(xml: str) -> set:
     """Devuelve el conjunto de prefijos de namespace usados en un fragmento XML."""
     prefixes = {m.group(1) for m in _ELEM_PREFIX_RE.finditer(xml)}
     prefixes |= {m.group(1) for m in _ATTR_PREFIX_RE.finditer(xml)}
-    prefixes.discard("xmlns")
-    return prefixes
+    return prefixes - _IMPLICIT_PREFIXES
+
+
+def _complete_ns_pool(ns_pool: Dict[str, str], required: set) -> Dict[str, str]:
+    """Completa el pool de namespaces con las URIs conocidas de Excel.
+
+    Permite reinyectar un bloque cuyos prefijos (`x14`, `xm`, `xr`…) no vinieran
+    declarados en el archivo original, evitando descartar la lista por completo.
+    """
+    completed = dict(ns_pool)
+    for prefix in required:
+        if prefix not in completed and prefix in _KNOWN_NS_URIS:
+            completed[prefix] = _KNOWN_NS_URIS[prefix]
+    return completed
 
 
 def _ensure_ns_decls(sheet_xml: str, ns_decls: Dict[str, str]) -> str:
@@ -465,41 +505,31 @@ def _is_well_formed(xml: str) -> bool:
         return False
 
 
-def _build_data_validations_block(
-    source_block: Optional[str],
-    saved_xml: str,
-    literal: bool = False,
-) -> Optional[str]:
-    """Construye el bloque `<dataValidations>` definitivo para una hoja.
+def _build_data_validations_block(source_block: Optional[str]) -> Optional[str]:
+    """Devuelve el bloque `<dataValidations>` íntegro del archivo original (respaldo).
 
-    Combina (unión sin duplicar) las validaciones del original con las que openpyxl
-    haya escrito en el archivo guardado, de modo que ninguna se pierda.
+    Se escribe el bloque del respaldo **tal cual** (es la fuente de verdad) y se
+    reemplaza cualquier `<dataValidations>` que haya escrito openpyxl.
+
+    Importante: NO se combinan las validaciones del archivo guardado con las del
+    respaldo. openpyxl reescribe los atributos de cada `<dataValidation>` (añade
+    `showDropDown="0"`, `showInputMessage="0"`, reordena, etc.), por lo que
+    compararlas por texto las consideraba distintas y se duplicaban (3→6, 7→14).
+    openpyxl nunca añade validaciones nuevas, sólo refleja las que leyó, de modo
+    que el bloque del original siempre es suficiente y exacto.
 
     Args:
         source_block: Bloque `<dataValidations>` del archivo original (respaldo).
-        saved_xml: XML de la hoja tal como la guardó openpyxl.
-        literal: Si es True devuelve el bloque original tal cual (estrategia "dura").
 
     Returns:
         El bloque XML a escribir, o None si el original no tenía validaciones.
     """
-    source_items = _DATA_VALIDATION_RE.findall(source_block or "")
-    if not source_items:
+    if not source_block:
         return None
-    if literal:
-        return source_block.strip()
-
-    merged = list(source_items)
-    seen = {_normalize_xml_fragment(item) for item in merged}
-    saved_m = _DATA_VALIDATIONS_RE.search(saved_xml)
-    if saved_m:
-        for item in _DATA_VALIDATION_RE.findall(saved_m.group(0)):
-            fingerprint = _normalize_xml_fragment(item)
-            if fingerprint not in seen:
-                seen.add(fingerprint)
-                merged.append(item)
-
-    return '<dataValidations count="%d">%s</dataValidations>' % (len(merged), "".join(merged))
+    if not _DATA_VALIDATION_RE.search(source_block):
+        # Bloques vacíos (`<dataValidations count="0"/>`): nada que restaurar.
+        return None
+    return source_block.strip()
 
 
 def _apply_preserved_blocks(
@@ -507,7 +537,6 @@ def _apply_preserved_blocks(
     dv_block: Optional[str],
     ext_block: Optional[str],
     ns_pool: Dict[str, str],
-    literal: bool = False,
 ) -> Tuple[str, List[str]]:
     """Reinyecta en el XML de una hoja los bloques de validación y extensiones.
 
@@ -516,7 +545,6 @@ def _apply_preserved_blocks(
         dv_block: Bloque `<dataValidations>` del original (o None).
         ext_block: Bloque `<extLst>` del original (o None).
         ns_pool: Declaraciones `{prefijo: uri}` disponibles para resolver prefijos.
-        literal: Estrategia "dura": escribe el bloque de validaciones original tal cual.
 
     Returns:
         Tupla (XML resultante, lista de problemas detectados).
@@ -525,13 +553,16 @@ def _apply_preserved_blocks(
     new_xml = sheet_xml
 
     if dv_block:
-        block = _build_data_validations_block(dv_block, new_xml, literal=literal)
+        block = _build_data_validations_block(dv_block)
         if block:
             new_xml = _replace_or_insert_block(
                 new_xml, _DATA_VALIDATIONS_RE, block, _AFTER_DATA_VALIDATIONS
             )
 
     if ext_block:
+        # Se completan los namespaces faltantes con las URIs conocidas de Excel
+        # para no descartar el bloque por un prefijo no declarado.
+        ns_pool = _complete_ns_pool(ns_pool, _prefixes_used(ext_block))
         unknown = _prefixes_used(ext_block) - set(ns_pool)
         if unknown:
             problemas.append(
@@ -765,7 +796,7 @@ def preserve_sheet_data_blocks(
 
     out_map = _read_sheet_names_by_path_dict(out_members)
 
-    def _build_candidate(literal: bool) -> Tuple[Dict[str, bytes], List[str], int]:
+    def _build_candidate() -> Tuple[Dict[str, bytes], List[str], int]:
         """Genera una versión candidata del archivo con los bloques reinyectados."""
         candidate = dict(out_members)
         problemas: List[str] = []
@@ -781,7 +812,7 @@ def preserve_sheet_data_blocks(
                 continue
             current = candidate[sheet_path].decode("utf-8", "ignore")
             new_xml, sheet_problems = _apply_preserved_blocks(
-                current, blk["dv"], blk["ext"], blk["ns"], literal=literal
+                current, blk["dv"], blk["ext"], blk["ns"]
             )
             problemas.extend(f"'{sheet_name}': {p}" for p in sheet_problems)
             if new_xml != current:
@@ -824,16 +855,7 @@ def preserve_sheet_data_blocks(
                 )
         return candidate, problemas, restored_names
 
-    candidate, problemas, nombres_restaurados = _build_candidate(literal=False)
-    if problemas:
-        # Estrategia "dura": escribir el bloque original literal (sin combinar).
-        strict_candidate, strict_problemas, strict_nombres = _build_candidate(literal=True)
-        if len(strict_problemas) < len(problemas):
-            candidate, problemas, nombres_restaurados = (
-                strict_candidate,
-                strict_problemas,
-                strict_nombres,
-            )
+    candidate, problemas, nombres_restaurados = _build_candidate()
 
     report.nombres_definidos_restaurados = nombres_restaurados
     # Se eliminan mensajes repetidos conservando el orden original.

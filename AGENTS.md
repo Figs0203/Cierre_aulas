@@ -154,22 +154,30 @@ oficiales de la biblioteca. Ajustes recientes (formato oficial):
   descartar al guardar tanto el bloque `<dataValidations>` (listas estándar) como
   las extensiones de hoja (`extLst`, p. ej. `x14:dataValidations`) y algunos
   `definedNames` que son el origen de las listas. Tras guardar,
-  `preserve_sheet_data_blocks` (`output/direct_updater.py`) reinyecta **ambos
-  bloques** desde el respaldo previo y: (a) los **combina sin duplicar** con los
-  que haya escrito openpyxl (nunca se pierde una validación presente en
-  cualquiera de los dos); (b) respeta el orden del esquema OOXML
+  `preserve_sheet_data_blocks` (`output/direct_updater.py`) reescribe **el bloque
+  del respaldo tal cual** (fuente de verdad: openpyxl sólo refleja lo que leyó,
+  nunca añade listas) y: (a) reemplaza cualquier bloque que haya escrito openpyxl
+  —**no se combinan por texto**, porque openpyxl reescribe cada `<dataValidation>`
+  (`showDropDown="0"`, reordena atributos, re-codifica entidades) y fusionarlas
+  duplicaba las listas: 3→6 y 7→14—; (b) respeta el orden del esquema OOXML
   (`dataValidations` después de `conditionalFormatting` y antes de
   `pageMargins`/`extLst`; `extLst` al final); (c) admite las formas autocerradas
   `<dataValidations/>` y `<extLst/>`; (d) copia a la raíz del worksheet las
   declaraciones `xmlns:` del original **y las de `xl/workbook.xml`** (prefijos
-  como `x14`, `xm`, `xr`), evitando "Prefijo no declarado"; (e) reincorpora los
-  `definedNames` que falten (nunca los que apuntan a libros externos); (f) valida
-  el XML resultante con ElementTree y, si es inválido, conserva la versión de
-  openpyxl; y (g) **verifica huella por huella** (tipo + `sqref` + fórmulas) que
-  ninguna lista del original se haya perdido; si detecta pérdidas reintenta con
-  una estrategia "dura" (bloque original literal) y, si aun así falla, lo
-  reporta. El Modo 5 imprime el resultado de esa verificación
+  como `x14`, `xm`, `xr`), con tabla de URIs conocidas de Excel como red de
+  seguridad; (e) reincorpora los `definedNames` que falten (nunca los que apuntan
+  a libros externos); (f) valida el XML resultante con ElementTree y, si es
+  inválido, conserva la versión de openpyxl; y (g) **verifica huella por huella**
+  (tipo + `sqref` + fórmulas) que ninguna lista del original se haya perdido, y
+  reporta cualquier problema. El Modo 5 imprime el resultado de esa verificación
   (`report.validaciones_preservadas`) y las advertencias (`report.warnings`).
+
+  > **Fix crítico (reporte real CMI121, 2026-10-23):** el detector de prefijos
+  > (`_prefixes_used`) confundía rangos de celdas de un `sqref` multirrango
+  > (`"B2:B9 AD2:AF2"`) con prefijos de namespace, descartaba el `extLst` completo
+  > y se perdían las 8 listas modernas (x14). Ahora un atributo con prefijo debe
+  > llevar `=` tras el nombre local, y los prefijos implícitos (`xml`) se ignoran.
+
 - **Fecha de envío en Sistematización**: la columna *Fecha de envío* se escribe
   como fecha oficial `DD-mes-AAAA` con mes abreviado en minúsculas (ej.
   `24-mar-2026`), nunca como `str(datetime)` (`2026-03-24 00:00:00`, que además
@@ -198,5 +206,5 @@ oficiales de la biblioteca. Ajustes recientes (formato oficial):
 > constante `_BORDER_COLOR` de `output/direct_updater.py` y
 > `output/excel_generator.py`.
 
-Última verificación: **102 tests OK** (`python -m pytest tests -q`). El grafo de
+Última verificación: **104 tests OK** (`python -m pytest tests -q`). El grafo de
 conocimiento se regenera con `graphify update .` tras cada cambio de código.
