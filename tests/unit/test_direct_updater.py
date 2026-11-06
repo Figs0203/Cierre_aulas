@@ -123,8 +123,34 @@ class TestDirectUpdater(unittest.TestCase):
             bk = create_timestamped_backup(files["sistematizacion"])
             self.assertTrue(bk.exists())
             self.assertEqual(bk.parent.name, "_backups_cierre")
-            self.assertIn("Sistematizacion_Cursos_COIN_2026_backup_", bk.name)
+            self.assertEqual(bk.name, "Sistematizacion_Cursos_COIN_2026_backup.xlsx")
             self.assertEqual(bk.stat().st_size, files["sistematizacion"].stat().st_size)
+
+    def test_backup_unico_se_actualiza_y_elimina_los_antiguos(self):
+        with tempfile.TemporaryDirectory() as tmp_str:
+            tmpdir = Path(tmp_str)
+            files = self._create_mock_files(tmpdir)
+            original = files["sistematizacion"]
+            backup_dir = tmpdir / "_backups_cierre"
+
+            # Respaldo del formato anterior (con marca de tiempo) que debe consolidarse
+            backup_dir.mkdir()
+            legacy = backup_dir / "Sistematizacion_Cursos_COIN_2026_backup_20260101_010101.xlsx"
+            legacy.write_bytes(b"antiguo")
+
+            primero = create_timestamped_backup(original, backup_dir=backup_dir)
+            self.assertFalse(legacy.exists(), "Debe eliminar los respaldos antiguos del mismo archivo")
+            self.assertEqual(primero.stat().st_size, original.stat().st_size)
+
+            # El archivo cambia; un segundo cierre debe actualizar el MISMO respaldo
+            original.write_bytes(b"contenido nuevo")
+            segundo = create_timestamped_backup(original, backup_dir=backup_dir)
+            self.assertEqual(primero, segundo)
+            self.assertEqual(segundo.read_bytes(), b"contenido nuevo")
+            self.assertEqual(
+                [p.name for p in backup_dir.iterdir()].count(segundo.name), 1
+            )
+            self.assertEqual(len(list(backup_dir.iterdir())), 1)
 
     def test_apply_direct_cierre_full_flow(self):
         with tempfile.TemporaryDirectory() as tmp_str:

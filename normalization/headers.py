@@ -116,16 +116,87 @@ _MODULE_REGEX = re.compile(
     re.IGNORECASE,
 )
 
-# Patrón para nota final
-_FINAL_GRADE_PATTERNS = [
-    re.compile(r"calculated\s*final\s*(grade)?", re.IGNORECASE),
-    re.compile(r"nota\s*final", re.IGNORECASE),
-    re.compile(r"promedio\s*final", re.IGNORECASE),
-    re.compile(r"final\s*grade", re.IGNORECASE),
-    # Algunos cursos (p. ej. CMI) exportan la nota final como 'Promedio curso completo'
-    re.compile(r"promedio\s*curso\s*completo", re.IGNORECASE),
-    re.compile(r"promedio\s*general", re.IGNORECASE),
+# Encabezados que NO deben confundirse con la nota final: fechas, horas,
+# identidad, datos estructurales y columnas de actividades/módulos.
+_FINAL_GRADE_NON_GRADE = re.compile(
+    r"\bfecha\b|\bhora\b|nombre|apellido|correo|documento|identificaci|usuario|"
+    r"username|seccion|programa|catalogo|clase|aula|semestre|periodo|\bano\b|\bmes\b|"
+    r"porcentaje|peso|intento|modulo|cuestionario|foro|buzon|taller|examen|"
+    r"actividad|tarea|proyecto|trabajo|unidad|leccion|entrega|semana|"
+    r"sede|jornada|grupo|credito",
+    re.IGNORECASE,
+)
+
+# Detección robusta de la nota final. Se evalúa sobre el encabezado normalizado
+# (minúsculas, sin tildes ni signos). El puntaje resuelve empates cuando el
+# archivo trae varias columnas parecidas. OJO: 'Calculated Final Grade Scheme
+# Symbol' es, en muchos archivos, el nombre real de la columna que contiene la
+# nota final; se trata igual que las demás y NUNCA se descarta por su nombre.
+_FINAL_GRADE_CANDIDATES: list[tuple[str, int]] = [
+    (r"calculated\s*final\s*grade", 100),          # Calculated Final Grade
+    (r"calculated\s*final", 96),                   # Calculated Final
+    (r"nota\s*(final|definitiva)", 98),            # Nota final / Nota definitiva
+    (r"calificacion\s*(final|definitiva)", 98),    # Calificación final
+    (r"\bdefinitiva\b", 95),                       # Definitiva
+    (r"final\s*grade", 96),                        # Final Grade
+    (r"final\s*score", 92),                        # Final Score
+    (r"puntaje\s*final", 92),                      # Puntaje final
+    (r"promedio\s*(final|curso\s*completo|general)", 90),  # Promedio curso completo
+    (r"nota\s*(del\s*)?curso", 84),                # Nota del curso
+    (r"calificacion\s*(del\s*)?curso", 84),        # Calificación del curso
+    (r"^final$", 70),                              # Encabezado exacto "Final"
 ]
+
+
+def _detectar_nota_final(header: str | None) -> tuple[int, str] | None:
+    """Devuelve (prioridad, canónico) si el encabezado es una nota final.
+
+    Reconoce variantes como 'Calculated Final Grade', 'Calculated Final',
+    'Final', 'Final Grade', 'Nota final', 'Definitiva', 'Promedio curso
+    completo' o 'Calculated Final Grade Scheme Symbol'. Esta última se trata
+    como una columna de nota final más (en muchos archivos es la columna real de
+    notas). Descarta encabezados de fechas, horas, identidad y actividades
+    (p. ej. 'Fecha Final', 'Examen final').
+
+    Returns:
+        ``(puntaje, canonical)`` donde ``canonical`` es ``nota_final`` o
+        ``promedio_curso``; ``None`` si no aplica.
+    """
+    normalized = normalize_for_comparison(header)
+    if not normalized:
+        return None
+    if _FINAL_GRADE_NON_GRADE.search(normalized):
+        return None
+
+    puntaje = None
+    for patron, valor in _FINAL_GRADE_CANDIDATES:
+        if re.search(patron, normalized):
+            puntaje = max(puntaje or 0, valor)
+
+    if puntaje is None:
+        return None
+
+    if "promedio curso completo" in normalized or normalized.startswith("promedio general"):
+        canonical = "promedio_curso"
+    else:
+        canonical = "nota_final"
+    return puntaje, canonical
+
+
+def final_grade_candidates(
+    headers: list[str | None],
+) -> list[tuple[int, int, str]]:
+    """Todas las columnas candidatas a nota final: [(col_idx, puntaje, canónico)].
+
+    Se exponen todas para que el parser pueda elegir, además del nombre, según
+    los **datos reales** de cada columna (cuál contiene las notas).
+    """
+    candidatos: list[tuple[int, int, str]] = []
+    for idx, header in enumerate(headers, start=1):
+        detectada = _detectar_nota_final(header)
+        if detectada is not None:
+            candidatos.append((idx, detectada[0], detectada[1]))
+    return candidatos
 
 
 def analyze_headers(
@@ -203,20 +274,16 @@ def analyze_headers(
             result.mapped.append(mapping)
             continue
 
-        # Intento 3: Detección de nota final por regex
-        is_final = False
-        for pattern in _FINAL_GRADE_PATTERNS:
-            if pattern.search(normalized):
-                result.mapped.append(HeaderMapping(
-                    original=original,
-                    canonical="nota_final",
-                    col_idx=col_idx,
-                    matched_via="final_grade_regex",
-                ))
-                is_final = True
-                break
-
-        if is_final:
+        # Intento 3: Detección robusta de nota final
+        detectada = _detectar_nota_final(original)
+        if detectada is not None:
+            _puntaje, canonical = detectada
+            result.mapped.append(HeaderMapping(
+                original=original,
+                canonical=canonical,
+                col_idx=col_idx,
+                matched_via="final_grade_regex",
+            ))
             continue
 
         # Sin match: registrar como no mapeado
@@ -241,9 +308,22 @@ def find_module_columns(headers: list[str | None]) -> dict[int, int]:
 def find_final_grade_column(headers: list[str | None]) -> int | None:
     """Retorna el índice de columna (1-based) de la nota final o None.
 
-    Reconoce tanto 'nota_final' (Calculated Final, Nota Final, etc.) como
-    'promedio_curso' (columna 'Promedio curso completo', usada por cursos como CMI).
+    Reconoce variantes como 'Calculated Final Grade', 'Calculated Final',
+    'Final', 'Final Grade', 'Nota final', 'Definitiva', 'Promedio curso completo'
+    o 'Calculated Final Grade Scheme Symbol'. Todas se consideran columnas de
+    nota final; **no** se descarta la de 'Scheme Symbol' por su nombre.
+
+    Cuando hay varias columnas candidatas, esta función (solo con encabezados)
+    toma la de mayor puntaje y, en empate, la primera. El parser de Notas
+    refina la elección con los datos reales de cada columna.
     """
+    candidatos = final_grade_candidates(headers)
+    if candidatos:
+        candidatos.sort(key=lambda c: (-c[1], c[0]))
+        return candidatos[0][0]
+
+    # Respaldo: alias canónicos ya mapeados (por si el alias no está cubierto
+    # por el detector anterior).
     analysis = analyze_headers(headers)
     for canonical in ("nota_final", "promedio_curso"):
         mapping = analysis.get_canonical(canonical)

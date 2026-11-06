@@ -5,8 +5,10 @@ Este módulo ejecuta el cierre directamente sobre los libros Excel oficiales con
 máxima responsabilidad y mecanismos de seguridad de nivel institucional:
 
 1. Respaldo Automático Previo (Zero-Data-Loss):
-   Copia íntegra con marca de tiempo en la subcarpeta '_backups_cierre/' antes de
-   tocar cualquier archivo.
+   Copia íntegra del estado actual en la subcarpeta '_backups_cierre/' antes de
+   tocar cualquier archivo. Se mantiene **un único respaldo por archivo**: en
+   cada cierre se actualiza (sobrescribe) con el estado previo a la operación y
+   se eliminan las copias antiguas con marca de tiempo del mismo archivo.
 
 2. Regla Estricta de No-Sobreescritura:
    - Celdas con datos preexistentes: Se respetan intactas y no se tocan.
@@ -93,11 +95,30 @@ class DirectUpdateReport:
     """Informe detallado de la actualización directa en archivos oficiales."""
     timestamp: str
     backups_created: List[Path] = field(default_factory=list)
+    # Respaldos antiguos (con marca de tiempo) consolidados en el backup único.
+    backups_consolidados: int = 0
     sistematizacion_updated_cells: int = 0
     sistematizacion_names_uppercased: int = 0
     sistematizacion_untouched_cells: int = 0
+    # Estudiantes cuyo archivo de Notas no traía nota final (no se inventa promedio)
+    sistematizacion_promedios_no_copiados: int = 0
     certificados_rows_appended: int = 0
+    # Ubicación exacta de lo anexado, para que el usuario pueda comprobarlo:
+    certificados_hoja: str = ""
+    certificados_fila_inicial: int = 0
+    certificados_fila_final: int = 0
+    certificados_n_inicial: int = 0
+    certificados_n_final: int = 0
+    # Relectura del archivo recién escrito: cuántas filas se confirmaron.
+    certificados_rows_verificados: int = 0
+    # Certificados del mismo curso ya presentes (posible cierre repetido).
+    certificados_previos: int = 0
+    # Aprobados que ya estaban registrados y por tanto NO se duplicaron.
+    certificados_omitidos_duplicados: int = 0
     control_aulas_classes_marked: int = 0
+    # Clases que ya tenían fecha de cierre (no se tocaron) o que no se hallaron.
+    control_aulas_classes_already_marked: int = 0
+    control_aulas_classes_not_found: List[str] = field(default_factory=list)
     errors: List[str] = field(default_factory=list)
     warnings: List[str] = field(default_factory=list)
     # Verificación de preservación por archivo (PreservationReport.resumen()):
@@ -961,40 +982,89 @@ def _merge_extlst_into_sheet_xml(sheet_xml: str, source_extlst: str) -> Optional
         return None
 
 
+def backup_path_for(file_path: Path | str, backup_dir: Optional[Path | str] = None) -> Path:
+    """Ruta del respaldo ÚNICO de un archivo oficial (sin marca de tiempo).
+
+    El respaldo vive en ``_backups_cierre/<nombre>_backup.<ext>`` y se
+    sobrescribe en cada cierre con el estado del archivo justo antes de la
+    automatización: siempre hay exactamente un respaldo por archivo.
+    """
+    path = Path(file_path).resolve()
+    target_dir = Path(backup_dir).resolve() if backup_dir else path.parent / "_backups_cierre"
+    return target_dir / f"{path.stem}_backup{path.suffix}"
+
+
+def find_legacy_backups(
+    file_path: Path | str, backup_dir: Optional[Path | str] = None
+) -> List[Path]:
+    """Respaldos antiguos con marca de tiempo del mismo archivo (formato previo)."""
+    path = Path(file_path).resolve()
+    target_dir = Path(backup_dir).resolve() if backup_dir else path.parent / "_backups_cierre"
+    if not target_dir.exists():
+        return []
+    pattern = f"{path.stem}_backup_*{path.suffix}"
+    return sorted(target_dir.glob(pattern))
+
+
 def create_timestamped_backup(file_path: Path | str, backup_dir: Optional[Path | str] = None) -> Path:
-    """Crea una copia de seguridad idéntica del archivo con marca de tiempo.
+    """Crea o ACTUALIZA el respaldo único del archivo oficial.
+
+    En cada cierre se reemplaza el respaldo existente por el estado actual del
+    archivo (antes de la automatización), de modo que ``_backups_cierre/``
+    conserva **un solo respaldo por archivo**. Se eliminan los respaldos
+    antiguos con marca de tiempo del mismo archivo (formato previo), para no
+    acumular copias.
 
     Args:
         file_path: Ruta del archivo original a respaldar.
         backup_dir: Carpeta de destino (si es None, crea '_backups_cierre' junto al archivo).
 
     Returns:
-        Ruta al archivo de respaldo creado.
+        Ruta al archivo de respaldo único.
     """
     path = Path(file_path).resolve()
     if not path.exists():
         raise FileNotFoundError(f"No se puede respaldar un archivo inexistente: {path}")
 
-    target_dir = Path(backup_dir).resolve() if backup_dir else path.parent / "_backups_cierre"
-    target_dir.mkdir(parents=True, exist_ok=True)
+    backup_path = backup_path_for(path, backup_dir)
+    backup_path.parent.mkdir(parents=True, exist_ok=True)
 
-    timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
-    backup_name = f"{path.stem}_backup_{timestamp_str}{path.suffix}"
-    backup_path = target_dir / backup_name
+    # Respaldo atómico: si la copia falla, el respaldo anterior no se destruye.
+    temporal = backup_path.with_name(backup_path.name + ".tmp")
+    try:
+        shutil.copy2(path, temporal)
+        os.replace(temporal, backup_path)
+    finally:
+        if temporal.exists():
+            try:
+                temporal.unlink()
+            except OSError:
+                pass
 
-    shutil.copy2(path, backup_path)
+    # Consolidar: se eliminan las copias con marca de tiempo del mismo archivo.
+    for legacy in find_legacy_backups(path, backup_dir):
+        if legacy == backup_path:
+            continue
+        try:
+            legacy.unlink()
+        except OSError:
+            pass
+
     return backup_path
 
 
 def find_latest_backup(original_path: Path | str, backup_dir: Optional[Path | str] = None) -> Optional[Path]:
-    """Busca el backup más reciente de un archivo oficial.
+    """Devuelve el respaldo único actual del archivo oficial.
+
+    Si todavía no existe el respaldo único pero hay copias antiguas con marca de
+    tiempo, devuelve la más reciente (migración transparente).
 
     Args:
         original_path: Ruta al archivo oficial original.
         backup_dir: Carpeta de backups (si es None, usa '_backups_cierre' junto al archivo).
 
     Returns:
-        Ruta al backup más reciente, o None si no hay ninguno.
+        Ruta al backup, o None si no hay ninguno.
     """
     path = Path(original_path).resolve()
     target_dir = Path(backup_dir).resolve() if backup_dir else path.parent / "_backups_cierre"
@@ -1002,9 +1072,13 @@ def find_latest_backup(original_path: Path | str, backup_dir: Optional[Path | st
     if not target_dir.exists():
         return None
 
-    # Buscar archivos que coincidan con el patrón: <stem>_backup_<timestamp><suffix>
+    unico = target_dir / f"{path.stem}_backup{path.suffix}"
+    if unico.exists():
+        return unico
+
+    # Compatibilidad con respaldos del formato anterior (con marca de tiempo).
     pattern = f"{path.stem}_backup_*{path.suffix}"
-    candidates = sorted(target_dir.glob(pattern), reverse=True)  # Más reciente primero (orden lexicográfico del timestamp)
+    candidates = sorted(target_dir.glob(pattern), reverse=True)
     return candidates[0] if candidates else None
 
 
@@ -1012,11 +1086,12 @@ def restore_last_backup(
     file_paths: Dict[str, Path | str],
     backup_dir: Optional[Path | str] = None,
 ) -> Dict[str, Any]:
-    """Restaura el último backup disponible para cada archivo oficial.
+    """Restaura el respaldo único de cada archivo oficial.
 
-    Solo restaura los archivos que tienen un backup disponible (Sistematización,
-    Certificados y Control de Aulas). El archivo de Notas nunca se modifica, así
-    que no tiene backup y se omite.
+    El respaldo único contiene el estado del archivo **justo antes del último
+    cierre** (se actualiza en cada ejecución). Solo restaura los archivos que
+    tienen respaldo (Sistematización, Certificados y Control de Aulas). El
+    archivo de Notas nunca se modifica, así que no tiene backup y se omite.
 
     Args:
         file_paths: Diccionario con rutas {'control_aulas', 'sistematizacion', 'certificados', ...}.
@@ -1106,6 +1181,171 @@ def _verify_preservation_and_report(
     return info
 
 
+# ---------------------------------------------------------------------------
+# Localización y verificación de la tabla de Certificados
+# ---------------------------------------------------------------------------
+# Tope defensivo de filas a inspeccionar (evita bucles eternos en hojas que
+# declaran la columna completa como usada).
+_MAX_FILAS_CERTIFICADOS = 200_000
+
+
+def _inspect_certificate_table(ws) -> Tuple[int, int, bool]:
+    """Localiza el final real de la tabla de Certificados y el último N° usado.
+
+    **Por qué no basta con "última fila con algo en A o B":** las hojas
+    institucionales suelen tener notas, títulos, totales o leyendas sueltas muy
+    por debajo de la tabla. Si se anexa después de ellas, los certificados
+    quedan a cientos o miles de filas del final visible de la tabla y el usuario
+    concluye —con razón— que "no se guardaron".
+
+    Un registro real de certificados se reconoce porque tiene **código del
+    certificado (columna H)** o, al menos, **nombres y apellidos (D y E)**. Las
+    notas y totales no cumplen esa condición.
+
+    Args:
+        ws: Hoja de openpyxl de Certificados.
+
+    Returns:
+        Tupla ``(ultima_fila_tabla, maximo_n, uso_respaldo)``. Si la hoja no
+        tiene el formato esperado, ``uso_respaldo`` es True y se devuelve la
+        última fila con contenido en A/B (comportamiento histórico).
+    """
+    max_r = min(ws.max_row or 1, _MAX_FILAS_CERTIFICADOS)
+    last_row = 0
+    max_n = 0
+    last_row_any = 1
+
+    for r in range(2, max_r + 1):
+        val_n = ws.cell(r, 1).value
+        val_b = ws.cell(r, 2).value
+        nombre = str(ws.cell(r, 4).value or "").strip()
+        apellido = str(ws.cell(r, 5).value or "").strip()
+        codigo = str(ws.cell(r, 8).value or "").strip()
+
+        if val_n is not None or val_b is not None:
+            last_row_any = r
+
+        es_registro = bool(codigo) or (bool(nombre) and bool(apellido))
+        if not es_registro:
+            continue
+
+        last_row = r
+        if val_n is not None:
+            try:
+                n_int = int(float(str(val_n).strip()))
+                if n_int > max_n:
+                    max_n = n_int
+            except (ValueError, TypeError):
+                pass
+
+    if last_row:
+        return last_row, max_n, False
+    return last_row_any, max_n, last_row_any > 1
+
+
+def _certificate_rows_by_document(ws, codigo_curso: str) -> Dict[str, int]:
+    """Certificados del mismo curso ya registrados, indexados por documento.
+
+    Sirve para que un segundo cierre del mismo curso (o una repetición por
+    error) no duplique filas.
+    """
+    objetivo = str(codigo_curso or "").strip().upper()
+    if not objetivo:
+        return {}
+
+    encontrados: Dict[str, int] = {}
+    max_r = min(ws.max_row or 1, _MAX_FILAS_CERTIFICADOS)
+    for r in range(2, max_r + 1):
+        codigo = str(ws.cell(r, 8).value or "").strip().upper()
+        if codigo != objetivo:
+            continue
+        doc = normalize_document(ws.cell(r, 6).value)
+        if doc and doc not in encontrados:
+            encontrados[doc] = r
+    return encontrados
+
+
+def _fila_certificados_vacia(ws, row: int, ncols: int = 13) -> bool:
+    """True si ninguna de las columnas de la tabla tiene contenido en la fila."""
+    for c in range(1, ncols + 1):
+        val = ws.cell(row, c).value
+        if val is not None and str(val).strip() != "":
+            return False
+    return True
+
+
+def _merges_covering_rows(ws, filas: List[int]) -> List[str]:
+    """Rangos combinados preexistentes que cubren filas anexadas.
+
+    Escribir dentro de una celda combinada es invisible en Excel (solo se ve el
+    valor de la celda superior izquierda del rango), así que conviene avisarlo:
+    el certificado queda escrito pero parte de sus datos no se muestra.
+    """
+    cubiertos: List[str] = []
+    try:
+        rangos = list(ws.merged_cells.ranges)
+    except Exception:  # noqa: BLE001 - la comprobación nunca debe romper el cierre
+        return cubiertos
+    for rango in rangos:
+        if any(rango.min_row <= fila <= rango.max_row for fila in filas):
+            cubiertos.append(str(rango))
+    return cubiertos
+
+
+def _verify_certificate_rows(
+    path: Path | str,
+    sheet_name: str,
+    esperadas: List[Tuple[int, int, str, str]],
+) -> Tuple[int, List[int]]:
+    """Relee el archivo recién escrito y confirma que las filas quedaron ahí.
+
+    Es la comprobación que faltaba: antes el cierre informaba "6 filas anexadas"
+    solo porque las había enviado al parcheador, sin volver a leer el archivo.
+
+    Args:
+        path: Archivo de Certificados ya escrito.
+        sheet_name: Hoja donde se anexó.
+        esperadas: Lista de ``(fila, N°, documento, código del certificado)``.
+
+    Returns:
+        Tupla ``(filas_confirmadas, filas_fallidas)``.
+    """
+    if not esperadas:
+        return 0, []
+
+    todas = [fila for fila, *_ in esperadas]
+    try:
+        wb = openpyxl.load_workbook(path, data_only=True)
+    except Exception:  # noqa: BLE001 - se informa como verificación fallida
+        return 0, todas
+
+    try:
+        if sheet_name not in wb.sheetnames:
+            return 0, todas
+        ws = wb[sheet_name]
+        confirmadas = 0
+        fallidas: List[int] = []
+        for fila, numero, documento, codigo in esperadas:
+            val_n = ws.cell(fila, 1).value
+            val_doc = ws.cell(fila, 6).value
+            val_cod = ws.cell(fila, 8).value
+
+            try:
+                n_ok = int(float(str(val_n).strip())) == int(numero)
+            except (TypeError, ValueError):
+                n_ok = str(val_n).strip() == str(numero).strip()
+            doc_ok = normalize_document(val_doc) == normalize_document(documento)
+            cod_ok = str(val_cod or "").strip().upper() == str(codigo).strip().upper()
+
+            if n_ok and doc_ok and cod_ok:
+                confirmadas += 1
+            else:
+                fallidas.append(fila)
+        return confirmadas, fallidas
+    finally:
+        wb.close()
+
+
 def apply_direct_cierre(
     file_paths: Dict[str, Path | str],
     result: AulaCierreResult,
@@ -1142,7 +1382,11 @@ def apply_direct_cierre(
     backup_by_role: Dict[str, Path] = {}
     for role, p in [("sistematizacion", path_sist), ("certificados", path_cert), ("control_aulas", path_ctrl)]:
         try:
+            # Respaldo único por archivo: se actualiza con el estado actual y se
+            # consolidan las copias antiguas con marca de tiempo.
+            legacy = find_legacy_backups(p, backup_dir=backup_dir)
             bk_path = create_timestamped_backup(p, backup_dir=backup_dir)
+            report.backups_consolidados += len(legacy)
             report.backups_created.append(bk_path)
             backup_by_role[role] = bk_path
         except Exception as e:
@@ -1251,6 +1495,12 @@ def apply_direct_cierre(
                 if c_idx and c_idx in es.raw_row_data:
                     target_values[c_idx] = es.raw_row_data[c_idx]
 
+            # La nota final se copia TAL CUAL de Notas. Si Notas no la trae, la
+            # celda queda vacía (nunca se escribe un promedio calculado).
+            c_prom = col_map.get("promedio")
+            if c_prom and es.raw_row_data.get(c_prom) is None:
+                report.sistematizacion_promedios_no_copiados += 1
+
             for c_idx, val_to_write in target_values.items():
                 if val_to_write is None:
                     continue
@@ -1279,6 +1529,15 @@ def apply_direct_cierre(
             row_border = border_class_sist if is_last_of_class else border_thin_sist
             sheet_sist.set_row_border(
                 r_idx, 1, max_col_sist, row_border, patcher_sist.styles
+            )
+
+        if report.sistematizacion_promedios_no_copiados:
+            report.warnings.append(
+                f"Sistematización: {report.sistematizacion_promedios_no_copiados} "
+                "estudiante(s) no tenían nota final en el archivo de Notas. Esa columna "
+                "se dejó vacía: NO se calculó ningún promedio. Revise que Notas traiga "
+                "la columna de nota final ('Calculated Final', 'Nota final', "
+                "'Promedio curso completo', etc.)."
             )
 
         wb_sist.close()
@@ -1317,21 +1576,22 @@ def apply_direct_cierre(
         border_thin_cert = patcher_cert.styles.border_id(_BORDER_THIN)
         border_class_cert = patcher_cert.styles.border_id(_BORDER_CLASS_SEPARATOR)
 
-        # Encontrar la última fila ocupada con datos reales en columna 1 o 2
-        last_row = 1
-        max_n = 0
-        for r in range(2, (ws_cert.max_row or 1) + 1):
-            val_n = ws_cert.cell(r, 1).value
-            val_c2 = ws_cert.cell(r, 2).value
-            if val_n is not None or val_c2 is not None:
-                last_row = max(last_row, r)
-                if val_n is not None:
-                    try:
-                        n_int = int(float(str(val_n).strip()))
-                        if n_int > max_n:
-                            max_n = n_int
-                    except (ValueError, TypeError):
-                        pass
+        # --- Localizar el FINAL REAL de la tabla de Certificados ----------
+        # No se usa "última fila con algo en A o B": una nota, un total o un
+        # título suelto debajo de la tabla movía el punto de anexado cientos de
+        # filas hacia abajo y los certificados quedaban fuera de la vista del
+        # usuario (parecía que no se habían escrito).
+        last_row, max_n, uso_respaldo = _inspect_certificate_table(ws_cert)
+        if uso_respaldo:
+            report.warnings.append(
+                "Certificados: la hoja no presenta el formato esperado de la tabla; "
+                "se anexará después de la última fila con contenido en las columnas A/B. "
+                "Verifique que las filas nuevas hayan quedado dentro de la tabla."
+            )
+
+        previos_por_doc = _certificate_rows_by_document(ws_cert, codigo_curso)
+        report.certificados_previos = len(previos_por_doc)
+        report.certificados_hoja = sheet_name_cert
 
         # Determinar consecutivo inicial
         current_n = max(max_n + 1, start_consecutivo)
@@ -1345,8 +1605,35 @@ def apply_direct_cierre(
                     all_approved.append((m, cg))
         all_approved.sort(key=lambda item: item[0].estudiante_sist.row_number)
 
-        curr_cert_r = last_row + 1
-        for idx, (m, cg) in enumerate(all_approved):
+        # No duplicar certificados ya registrados del mismo curso (mismo documento).
+        pendientes: List[Tuple[StudentMatch, ClaseGroup]] = []
+        for m, cg in all_approved:
+            es = m.estudiante_sist
+            doc_norm = normalize_document(es.documento.value if es.documento else "")
+            if doc_norm and doc_norm in previos_por_doc:
+                report.certificados_omitidos_duplicados += 1
+                continue
+            pendientes.append((m, cg))
+
+        # Primera fila libre a partir del final de la tabla (nunca sobre datos).
+        curr_cert_r = (last_row + 1) if last_row else 2
+        max_cert_r = min(ws_cert.max_row or 1, _MAX_FILAS_CERTIFICADOS)
+        fila_ajustada = False
+        while curr_cert_r <= max_cert_r and not _fila_certificados_vacia(ws_cert, curr_cert_r):
+            curr_cert_r += 1
+            fila_ajustada = True
+        if fila_ajustada:
+            report.warnings.append(
+                "Certificados: la fila inmediatamente posterior a la tabla ya tenía "
+                f"contenido ajeno; los certificados se anexaron desde la fila {curr_cert_r}."
+            )
+
+        fila_inicial = curr_cert_r
+        n_inicial = current_n
+        filas_esperadas: List[Tuple[int, int, str, str]] = []
+        filas_ocultas_restauradas = 0
+
+        for idx, (m, cg) in enumerate(pendientes):
             es = m.estudiante_sist
             meta = (metadatos_control or {}).get(cg.clase_id) or AulaMetadata()
             programa_str = meta.programa_academico.value if meta.programa_academico else ""
@@ -1395,16 +1682,21 @@ def apply_direct_cierre(
             # Separador con borde inferior grueso al terminar cada clase distinta
             current_clase = str(es.clase.value if es.clase and es.clase.value else cg.clase_id).strip()
             is_last_of_class = False
-            if idx == len(all_approved) - 1:
+            if idx == len(pendientes) - 1:
                 is_last_of_class = True
             else:
-                next_m, next_cg = all_approved[idx + 1]
+                next_m, next_cg = pendientes[idx + 1]
                 next_es = next_m.estudiante_sist
                 next_clase = str(next_es.clase.value if next_es.clase and next_es.clase.value else next_cg.clase_id).strip()
                 if current_clase != next_clase:
                     is_last_of_class = True
 
             border_cell = border_class_cert if is_last_of_class else border_thin_cert
+
+            # Si la fila destino existía como plantilla oculta, se hace visible:
+            # de lo contrario el certificado se escribe pero no se ve en Excel.
+            if sheet_cert.show_row(curr_cert_r):
+                filas_ocultas_restauradas += 1
 
             for c_idx, val in enumerate(row_cert, start=1):
                 # La columna N° (1) es la única que NO lleva borde inferior grueso
@@ -1420,12 +1712,61 @@ def apply_direct_cierre(
                     curr_cert_r, c_idx, val, has_value=True, style=style_id
                 )
 
+            filas_esperadas.append(
+                (curr_cert_r, current_n, str(doc), str(codigo_curso).strip().upper())
+            )
             current_n += 1
             curr_cert_r += 1
             report.certificados_rows_appended += 1
 
+        if filas_esperadas:
+            report.certificados_fila_inicial = fila_inicial
+            report.certificados_fila_final = curr_cert_r - 1
+            report.certificados_n_inicial = n_inicial
+            report.certificados_n_final = current_n - 1
+
+        if filas_ocultas_restauradas:
+            report.warnings.append(
+                f"Certificados: {filas_ocultas_restauradas} fila(s) destino estaban "
+                "ocultas o agrupadas y se hicieron visibles para que los certificados "
+                "se puedan ver en Excel."
+            )
+
+        if report.certificados_omitidos_duplicados:
+            report.warnings.append(
+                f"Certificados: se omitieron {report.certificados_omitidos_duplicados} "
+                f"estudiante(s) que ya tenían certificado registrado del curso "
+                f"'{str(codigo_curso).strip().upper()}' en la hoja '{sheet_name_cert}' "
+                "(no se duplicaron). Si el cierre anterior no se vio reflejado, revise "
+                "esa hoja antes de repetir el proceso."
+            )
+
+        merges_nombres = _merges_covering_rows(
+            ws_cert, [fila for fila, *_ in filas_esperadas]
+        )
+        if merges_nombres:
+            report.warnings.append(
+                "Certificados: las filas anexadas caen dentro de celdas combinadas "
+                f"preexistentes ({', '.join(merges_nombres)}). Excel solo muestra el "
+                "valor de la celda superior izquierda, así que parte de los datos "
+                "podría no verse; revise el formato de esas filas."
+            )
+
         wb_cert.close()
         patcher_cert.save()
+
+        # Relectura del archivo: confirma que lo anexado quedó realmente escrito.
+        verificadas, fallidas = _verify_certificate_rows(
+            path_cert, sheet_name_cert, filas_esperadas
+        )
+        report.certificados_rows_verificados = verificadas
+        if fallidas:
+            report.errors.append(
+                "Certificados: la relectura del archivo no encontró las filas recién "
+                f"anexadas {fallidas}. Restaure el último respaldo (opción 6) y revise "
+                "el archivo antes de continuar."
+            )
+
         _verify_preservation_and_report(
             report,
             "Certificados",
@@ -1487,7 +1828,13 @@ def apply_direct_cierre(
                         )
                         report.control_aulas_classes_marked += 1
                         modified_control_sheets.add(sheet_name)
+                    else:
+                        # La clase ya tenía fecha de cierre: no se toca ni se cuenta
+                        # como error, pero se informa para que el usuario lo sepa.
+                        report.control_aulas_classes_already_marked += 1
                     clases_pendientes.discard(c_str)
+
+        report.control_aulas_classes_not_found = sorted(clases_pendientes)
 
         wb_ctrl.close()
         patcher_ctrl.save()

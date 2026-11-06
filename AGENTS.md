@@ -15,7 +15,11 @@ y los tests las protegen:
    módulos de red (`tests/unit/test_offline.py`).
 2. **Fuentes inmutables (solo lectura)**: los 4 archivos oficiales nunca se
    modifican ni sobrescriben sin respaldo explícito. El Modo 5 es la única vía
-   de escritura y exige confirmación `"SI"` + backup automático.
+   de escritura y exige confirmación `"SI"` + backup automático. Se mantiene
+   **un único respaldo por archivo** (`_backups_cierre/<nombre>_backup.xlsx`):
+   en cada cierre se actualiza con el estado previo a la automatización y se
+   consolidan (eliminan) las copias antiguas con marca de tiempo del mismo
+   archivo.
 3. **Auditoría SHA-256**: hash antes y después de cada operación
    (`security/integrity.py`, `tests/unit/test_immutability.py`).
 4. **Escritura segura y quirúrgica**: solo se escriben celdas estrictamente
@@ -52,6 +56,10 @@ python tests/discovery/inspect_real_files.py --control "..." --sistematizacion "
 # Diagnóstico de cruce de identidades (sin datos personales; útil si hay 0 matches)
 # También disponible en el menú de main.py como opción [7].
 python tests/discovery/diagnose_matching.py --control "..." --sistematizacion "..." --notas "..." --certificados "..." --aula "CMI120"
+
+# Inspector del archivo de Certificados: ubica un curso, sus filas y si están ocultas
+# o dentro de celdas combinadas (sin datos personales).
+python tests/discovery/inspect_certificados.py --certificados "Control_codigos_certificados_ABBUEI.xlsx" --curso ABBUEI227
 ```
 
 El menú de `main.py` (fuente de verdad; el README puede estar desactualizado):
@@ -231,5 +239,54 @@ oficiales de la biblioteca. Ajustes recientes (formato oficial):
 > constante `_BORDER_COLOR` (ARGB, `FF000000`) de `output/direct_updater.py` y en
 > `output/excel_generator.py`.
 
-Última verificación: **112 tests OK** (`python -m pytest tests -q`). El grafo de
+- **Anexado de Certificados a prueba de fallos (reporte real ABBUEI227, 2026-11-06)**:
+  el punto de anexado ya **no** se calculaba con "última fila con algo en A o B".
+  Una nota, total o leyenda suelta debajo de la tabla desplazaba los certificados
+  cientos/miles de filas y el usuario concluía que "no se guardaron". Ahora
+  `_inspect_certificate_table` reconoce los **registros reales** (código del
+  certificado en H o nombres+apellidos en D/E) e ignora lo ajeno a la tabla;
+  `_fila_certificados_vacia` impide sobrescribir contenido; `show_row` de
+  `XlsxPatcher` desoculta filas de plantilla; se **omiten duplicados** (mismo
+  documento y curso) y, tras guardar, `_verify_certificate_rows` **relee el archivo**
+  y confirma fila por fila lo anexado (N°, documento y código). El Modo 5 informa
+  la hoja, el rango exacto de filas y el resultado de la verificación, además de
+  imprimir las rutas completas de los 4 archivos seleccionados. Nuevo inspector
+  local `tests/discovery/inspect_certificados.py` (sin PII) para ubicar un curso
+  en el archivo, ver si sus filas están ocultas, filtradas o combinadas.
+
+- **La nota final se copia, NUNCA se promedia (reporte real ABBUEI227, 2026-11-06)**:
+  `evaluate_certification_status` ya no usa `sum(notas)/len(notas)` como valor de
+  la nota final. La columna *Promedio* de Sistematización recibe **exactamente** el
+  valor de la nota final del archivo de Notas (numérico o simbólico); si Notas no
+  la trae, la celda queda vacía y el Modo 5 lo advierte
+  (`sistematizacion_promedios_no_copiados`). El promedio de módulos se conserva
+  solo para la regla oficial de abandono (`AVERAGE(AS:AV)=0`). Además:
+  - `parsing/notas_parser.py` lee una segunda vez con `data_only=True`, de modo
+    que una nota final escrita como **fórmula** usa su valor calculado en caché
+    (con `data_only=False` se leía el texto `=AVERAGE(...)` y se perdía el valor).
+  - `normalization/headers.py` reconoce como columna de nota final, sin
+    distinciones ni descartes por el nombre, `Calculated Final Grade`,
+    `Calculated Final Grade Scheme Symbol`, `Calculated Final`, `Final`,
+    `Final Grade`, `Nota final`, `Nota definitiva`, `Calificación final`,
+    `Definitiva`, `Final Score`, `Puntaje final`, `Promedio final` y
+    `Promedio curso completo`. `_detectar_nota_final` puntúa los encabezados y
+    descarta falsos positivos de fecha/hora/identidad/actividades (`Fecha
+    Final`, `Hora final`, `Examen final`, `Trabajo final`, etc.).
+  - **La elección entre varias columnas candidatas es por DATOS, no por el
+    nombre**: `parsing/notas_parser.py:_elegir_columna_nota_final` prefiere la
+    columna con más valores numéricos, luego la de más valores no vacíos y, al
+    final, el mayor puntaje del encabezado. Así, si en un archivo las notas
+    reales están en `Calculated Final Grade Scheme Symbol` (aunque el nombre
+    sugiera símbolos), se usa esa columna.
+  - En el archivo auxiliar (Modo 3) la columna de promedio tampoco se pasa a
+    mayúsculas, para conservar el valor literal de Notas.
+- **Un solo respaldo por archivo**: `create_timestamped_backup` ahora crea/actualiza
+  `_backups_cierre/<nombre>_backup.<ext>` (sin marca de tiempo) con el estado
+  previo a cada cierre, de forma atómica (`.tmp` + `os.replace`), y elimina las
+  copias antiguas `<nombre>_backup_<timestamp>.<ext>` del mismo archivo.
+  `find_latest_backup` devuelve el respaldo único (o el más reciente del formato
+  anterior si aún no migró) y el Modo 6 restaura ese estado previo al último
+  cierre.
+
+Última verificación: **139 tests OK** (`python -m pytest tests -q`). El grafo de
 conocimiento se regenera con `graphify update .` tras cada cambio de código.

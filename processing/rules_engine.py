@@ -45,7 +45,7 @@ def evaluate_certification_status(
     calificaciones: Dict[str, float],
     tipo_grupo: Optional[str] = None,
     nota_final_calculated: Optional[float] = None,
-) -> Tuple[str, float]:
+) -> Tuple[str, Optional[float]]:
     """Evalúa el estado de certificación oficial de un estudiante.
 
     Args:
@@ -54,9 +54,12 @@ def evaluate_certification_status(
         nota_final_calculated: Valor de 'Calculated Final' extraído directamente de Notas.
 
     Returns:
-        Tupla (estado, promedio):
-          - estado: 'APROBÓ', 'NO APROBÓ' o 'ABANDONÓ' (en mayúsculas oficiales).
-          - promedio: Nota de 'Calculated Final' (o promedio de módulos como fallback).
+        Tupla (estado, nota_final):
+          - estado: 'Aprobó', 'No aprobó' o 'Abandonó'.
+          - nota_final: **exactamente** el valor de la nota final de Notas
+            (puede ser None si el archivo no la trae). NUNCA se calcula un
+            promedio: los porcentajes y ponderaciones del curso son potestad
+            del archivo de Notas (Calculated Final), no de esta herramienta.
     """
     # Extraer valores numéricos de módulos
     mod_keys = sorted([k for k in calificaciones if k.startswith("modulo_")])
@@ -68,20 +71,21 @@ def evaluate_certification_status(
         except (ValueError, TypeError):
             pass
 
-    # Asignar promedio: prioridad a Calculated Final de notas
-    if nota_final_calculated is not None:
-        promedio = nota_final_calculated
-    elif notas_vals:
-        promedio = round(sum(notas_vals) / len(notas_vals), 2)
-    else:
-        promedio = 0.0
+    # El promedio de módulos se usa SOLO para la regla oficial de abandono
+    # (AVERAGE(AS:AV)=0). Jamás se escribe en la columna de nota final.
+    promedio_modulos = (
+        round(sum(notas_vals) / len(notas_vals), 2) if notas_vals else None
+    )
+
+    # La nota final se COPIA TAL CUAL de Notas; si no existe, queda None.
+    promedio = nota_final_calculated
 
     if not notas_vals and nota_final_calculated is None:
-        return "Abandonó", 0.0
+        return "Abandonó", None
 
     # 1. Regla oficial de "Abandonó":
-    # Promedio = 0, ó todas las notas en 0, ó los módulos 3 y 4 en 0
-    all_zero = all(n == 0.0 for n in notas_vals) if notas_vals else (promedio == 0.0)
+    # Promedio de módulos = 0, ó todas las notas en 0, ó los módulos 3 y 4 en 0
+    all_zero = all(n == 0.0 for n in notas_vals) if notas_vals else False
     m3_zero = False
     m4_zero = False
     if len(notas_vals) >= 3 and notas_vals[2] == 0.0:
@@ -89,7 +93,12 @@ def evaluate_certification_status(
     if len(notas_vals) >= 4 and notas_vals[3] == 0.0:
         m4_zero = True
 
-    if promedio == 0.0 or all_zero or (m3_zero and m4_zero):
+    if (
+        (promedio_modulos is not None and promedio_modulos == 0.0)
+        or all_zero
+        or (m3_zero and m4_zero)
+        or (promedio is not None and promedio == 0.0)
+    ):
         return "Abandonó", promedio
 
     # 2. Umbral según tipo de grupo (Pregrado >= 3.0, Posgrado >= 3.5)
@@ -149,20 +158,37 @@ def apply_rules_to_match(
             except ValueError:
                 pass
 
-    # Extraer valor exacto de Calculated Final de Notas
-    nota_final_val = None
+    # Extraer la nota final EXACTA de Notas ('Calculated Final' o equivalente).
+    # Se copia tal cual: no se recalcula, no se promedia y no se reemplaza por
+    # una fórmula. Si Notas no la trae, no se escribe nada en Sistematización.
+    nota_final_origen: Any = None
     if en.nota_final and en.nota_final.value is not None:
+        valor = en.nota_final.value
+        if isinstance(valor, str):
+            texto = valor.strip()
+            # Una fórmula sin valor calculado no debe copiarse como fórmula a los
+            # archivos oficiales: se trata como nota ausente.
+            if texto.startswith("=") or texto == "":
+                nota_final_origen = None
+            else:
+                nota_final_origen = valor
+        else:
+            nota_final_origen = valor
+
+    # Valor numérico solo para comparaciones internas (regla de abandono).
+    nota_final_num: Optional[float] = None
+    if nota_final_origen is not None:
         try:
-            nota_final_val = float(str(en.nota_final.value).replace(",", "."))
+            nota_final_num = float(str(nota_final_origen).replace(",", "."))
         except (ValueError, TypeError):
-            nota_final_val = en.nota_final.value
+            nota_final_num = None
 
     tipo_grupo_str = str(es.tipo_grupo.value) if es.tipo_grupo and es.tipo_grupo.value else "Pregrado"
 
     estado, promedio = evaluate_certification_status(
         califs_dict,
         tipo_grupo=tipo_grupo_str,
-        nota_final_calculated=nota_final_val if isinstance(nota_final_val, (int, float)) else None,
+        nota_final_calculated=nota_final_num,
     )
 
     es.estado_calculado = estado
@@ -209,8 +235,11 @@ def apply_rules_to_match(
     if "modulo_5" in califs_dict:
         es.raw_row_data[c_m5] = califs_dict["modulo_5"]
 
-    # Copiar y pegar directamente Calculated Final en la columna de promedio
-    es.raw_row_data[c_prom] = promedio
+    # Copiar y pegar la nota final TAL CUAL viene del archivo de Notas.
+    # Si Notas no trae nota final, la celda de Sistematización se deja vacía:
+    # NUNCA se inventa un promedio de módulos.
+    if nota_final_origen is not None:
+        es.raw_row_data[c_prom] = nota_final_origen
     es.raw_row_data[c_est] = es.estado_calculado
     es.raw_row_data[c_elab] = es.elaboro_certificado_calculado
     es.raw_row_data[c_cod] = es.codigo_certificado_calculado

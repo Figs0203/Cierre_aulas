@@ -192,5 +192,14 @@ def select_all_four_files(use_gui: bool = True) -> dict[str, Path]:
     print("\n" + "=" * 72)
     print("✅ LOS 4 ARCHIVOS FUERON VALIDADOS Y ESTÁN LISTOS PARA ANÁLISIS LOCAL")
     print("=" * 72)
+    print("\n📂 Rutas completas seleccionadas (verifíquelas antes de continuar):")
+    etiquetas = {
+        "control_aulas": "Control de Aulas",
+        "sistematizacion": "Sistematización",
+        "notas": "Notas (solo lectura)",
+        "certificados": "Certificados",
+    }
+    for role, etiqueta in etiquetas.items():
+        print(f"   • {etiqueta}: {files[role]}")
 
     return files

@@ -500,6 +500,27 @@ class _SheetEditor:
             self.dirty = True
         return row
 
+    def show_row(self, number: int) -> bool:
+        """Quita los atributos que ocultan una fila (`hidden` y `outlineLevel`).
+
+        Se usa al anexar registros nuevos (p. ej. certificados) en una hoja que
+        tenía filas de plantilla ocultas o agrupadas justo debajo de la tabla:
+        sin esto el registro se escribe en el XML, pero Excel lo muestra oculto
+        y parece que "no se guardó".
+
+        Returns:
+            True si la fila estaba oculta y se hizo visible.
+        """
+        row = self._row(number)
+        new_attrs = _del_attr(row.attrs, "hidden")
+        new_attrs = _del_attr(new_attrs, "outlineLevel")
+        if new_attrs == row.attrs:
+            return False
+        row.attrs = new_attrs
+        row.raw = None
+        self.dirty = True
+        return True
+
     def _cell(self, number: int, col: int) -> _Cell:
         row = self._row(number)
         cell = row.cells.get(col)

@@ -320,8 +320,8 @@ def handle_direct_cierre_mode():
 
     print("\n" + "!" * 76)
     print("🛡️ GARANTÍAS DE SEGURIDAD Y RESPONSABILIDAD:")
-    print("  • Se creará una copia de seguridad (backup) automática de cada archivo")
-    print("    en la carpeta '_backups_cierre/' antes de cualquier escritura.")
+    print("  • Se creará (o actualizará) un ÚNICO respaldo de cada archivo en la")
+    print("    carpeta '_backups_cierre/' con el estado previo a la automatización.")
     print("  • Ninguna celda preexistente con datos será destruida ni alterada.")
     print("  • Los nombres y apellidos de los estudiantes se estandarizarán a MAYÚSCULAS.")
     print("  • Solo se escribirán notas y estados en celdas que estén estrictamente vacías.")
@@ -356,15 +356,53 @@ def handle_direct_cierre_mode():
     if report.is_successful:
         print("🎉 ¡CIERRE DIRECTO APLICADO EXITOSAMENTE EN LOS ARCHIVOS OFICIALES!")
         print("=" * 76)
-        print("📂 Copias de seguridad automáticas creadas en:")
+        print("📂 Respaldo único actualizado (estado previo al cierre):")
         for bk in report.backups_created:
             print(f"   • {bk.resolve()}")
+        if report.backups_consolidados:
+            print(
+                f"   • Copias antiguas consolidadas en el respaldo único: "
+                f"{report.backups_consolidados}"
+            )
         print("\n📊 Estadísticas de la operación:")
         print(f"   • Sistematización — Nombres estandarizados a MAYÚSCULAS: {report.sistematizacion_names_uppercased}")
         print(f"   • Sistematización — Celdas vacías actualizadas: {report.sistematizacion_updated_cells}")
         print(f"   • Sistematización — Celdas preexistentes protegidas (intactas): {report.sistematizacion_untouched_cells}")
+        if report.sistematizacion_promedios_no_copiados:
+            print(
+                f"   • Sistematización — Notas finales no copiadas (Notas no las trae): "
+                f"{report.sistematizacion_promedios_no_copiados}"
+            )
         print(f"   • Certificados — Filas de aprobados anexadas al final: {report.certificados_rows_appended}")
+        if report.certificados_fila_inicial:
+            print(
+                f"   • Certificados — Ubicación: hoja '{report.certificados_hoja}', "
+                f"filas {report.certificados_fila_inicial} a {report.certificados_fila_final} "
+                f"(N° {report.certificados_n_inicial} a {report.certificados_n_final})"
+            )
+            print(
+                f"   • Certificados — Verificación de escritura (relectura del archivo): "
+                f"{report.certificados_rows_verificados}/{report.certificados_rows_appended} filas confirmadas"
+            )
+            print(f"   • Certificados — Archivo actualizado: {files['certificados']}")
+            print("     ↳ Si no ve los certificados, abra EXACTAMENTE ese archivo y revise")
+            print("       que la hoja no tenga filtros activos ni filas ocultas/agrupadas.")
+        if report.certificados_omitidos_duplicados:
+            print(
+                f"   • Certificados — Omitidos por ya estar registrados: "
+                f"{report.certificados_omitidos_duplicados}"
+            )
         print(f"   • Control de Aulas — Clases marcadas con fecha de cierre: {report.control_aulas_classes_marked}")
+        if report.control_aulas_classes_already_marked:
+            print(
+                f"   • Control de Aulas — Clases que ya tenían fecha de cierre (sin cambios): "
+                f"{report.control_aulas_classes_already_marked}"
+            )
+        if report.control_aulas_classes_not_found:
+            print(
+                "   • Control de Aulas — Clases NO encontradas en el archivo: "
+                + ", ".join(report.control_aulas_classes_not_found)
+            )
         print("\n🔒 Integridad del libro original — verificación parte por parte:")
         print("   (listas de validación, formato condicional, controles de formulario,")
         print("    tablas dinámicas, gráficos, imágenes y nombres definidos)")
@@ -389,26 +427,27 @@ def handle_direct_cierre_mode():
 
 def handle_restore_backup_mode():
     print("\n" + "=" * 76)
-    print("INICIANDO MODO 6: RESTAURAR ÚLTIMO BACKUP EN ARCHIVOS OFICIALES")
+    print("INICIANDO MODO 6: RESTAURAR EL RESPALDO ÚNICO DE LOS ARCHIVOS OFICIALES")
     print("=" * 76)
-    print("Este modo restaura el último backup automático de cada archivo oficial.")
+    print("Este modo restaura el respaldo único de cada archivo oficial (el estado")
+    print("previo al último cierre; se actualiza en cada ejecución del Modo 5).")
     print("Archivos afectados:")
     print("  • Sistematización de Cursos COIN")
     print("  • Control de Códigos de Certificados")
     print("  • Control de Aulas de Formadores")
     print("  • Notas: NO se restaura (nunca fue modificado).")
-    print("\n⚠️  Los backups se buscan en la subcarpeta '_backups_cierre/' junto a cada archivo.")
+    print("\n⚠️  Los respaldos se buscan en la subcarpeta '_backups_cierre/' junto a cada archivo.")
     print("!" * 76)
     print("🛡️ ADVERTENCIA IMPORTANTE:")
     print("  Esta acción reemplazará el contenido actual de los archivos oficiales")
-    print("  con la versión de su último backup. Cualquier cambio posterior al backup")
-    print("  se perderá permanentemente.")
+    print("  con el respaldo único (estado previo al último cierre). Cualquier cambio")
+    print("  posterior a ese respaldo se perderá permanentemente.")
     print("!" * 76)
 
     files = select_all_four_files(use_gui=True)
 
     try:
-        confirm = input("\n¿Está seguro de restaurar los archivos oficiales desde el último backup? (Escriba 'SI' para confirmar): ").strip()
+        confirm = input("\n¿Está seguro de restaurar los archivos oficiales desde el respaldo único? (Escriba 'SI' para confirmar): ").strip()
         if confirm != "SI":
             print("\n❌ Operación cancelada por el usuario. Ningún archivo fue modificado.")
             return

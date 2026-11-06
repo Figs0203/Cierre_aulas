@@ -32,7 +32,11 @@ from config.colors import (
 )
 from core.models import EstudianteNotas
 from core.traceability import TracedValue
-from normalization.headers import find_final_grade_column, find_module_columns
+from normalization.headers import (
+    final_grade_candidates,
+    find_final_grade_column,
+    find_module_columns,
+)
 from normalization.text import normalize_document, normalize_whitespace
 
 
@@ -190,6 +194,64 @@ def _select_notas_sheet(wb) -> str:
     return wb.sheetnames[0]
 
 
+def _elegir_columna_nota_final(
+    ws,
+    headers: List[Optional[str]],
+    valor_efectivo=None,
+    limite: int = 300,
+) -> Optional[int]:
+    """Elige la columna que realmente contiene la nota final.
+
+    Puede haber varias columnas candidatas por su nombre ('Calculated Final
+    Grade', 'Calculated Final Grade Scheme Symbol', 'Final', etc.). En lugar de
+    decidir solo por el encabezado, se inspeccionan los **datos**: gana la
+    columna con más valores numéricos, luego la de más valores no vacíos y, en
+    último término, la de mayor puntaje de coincidencia del encabezado.
+
+    Así, si en un archivo la columna real de notas se llama 'Calculated Final
+    Grade Scheme Symbol' (aunque el nombre sugiera símbolos), se usa esa y no se
+    descarta.
+
+    Args:
+        ws: Hoja de openpyxl con las notas.
+        headers: Encabezados de la hoja.
+        valor_efectivo: Función opcional (celda, fila, col) → valor, para leer el
+            resultado de fórmulas. Si es None se usa ``celda.value``.
+        limite: Filas a inspeccionar para decidir (las suficientes para detectar
+            la columna con datos).
+
+    Returns:
+        Índice 1-based de la columna elegida, o None si no hay candidatas.
+    """
+    candidatos = final_grade_candidates(headers)
+    if not candidatos:
+        return None
+    if len(candidatos) == 1:
+        return candidatos[0][0]
+
+    leer = valor_efectivo or (lambda celda, fila, col: celda.value)
+    max_fila = min(ws.max_row or 1, limite)
+    mejor_clave = None
+    mejor_col = candidatos[0][0]
+
+    for col, puntaje, _canonical in candidatos:
+        numericos = 0
+        no_vacios = 0
+        for fila in range(2, max_fila + 1):
+            valor = leer(ws.cell(fila, col), fila, col)
+            if valor is None or str(valor).strip() == "":
+                continue
+            no_vacios += 1
+            if _parse_nota(valor) is not None:
+                numericos += 1
+        clave = (numericos, no_vacios, puntaje, -col)
+        if mejor_clave is None or clave > mejor_clave:
+            mejor_clave = clave
+            mejor_col = col
+
+    return mejor_col
+
+
 def parse_notas_archivo(
     file_path: Path | str,
     sheet_name: Optional[str] = None,
@@ -217,6 +279,29 @@ def parse_notas_archivo(
         sheet_name = _select_notas_sheet(wb)
         ws = wb[sheet_name]
 
+    # Segunda lectura con VALORES CALCULADOS. Los archivos de Interactiva pueden
+    # traer la nota final (o los módulos) como fórmula; con `data_only=False`
+    # openpyxl devuelve el texto de la fórmula y se perdería el valor real.
+    wb_valores = None
+    ws_valores = None
+    try:
+        wb_valores = openpyxl.load_workbook(path, data_only=True, read_only=False)
+        if sheet_name in wb_valores.sheetnames:
+            ws_valores = wb_valores[sheet_name]
+    except Exception:  # noqa: BLE001 - si falla, se usa la lectura normal
+        wb_valores = None
+        ws_valores = None
+
+    def valor_efectivo(celda, fila: int, col: int):
+        """Valor real de una celda: si es fórmula, su resultado en caché si existe."""
+        valor = celda.value
+        if isinstance(valor, str) and valor.startswith("="):
+            if ws_valores is not None:
+                cacheado = ws_valores.cell(fila, col).value
+                if cacheado is not None:
+                    return cacheado
+        return valor
+
     # 1. Leer encabezados
     max_col = ws.max_column or 1
     raw_headers: List[Optional[str]] = []
@@ -226,7 +311,9 @@ def parse_notas_archivo(
 
     # Mapeo semántico de columnas de módulos y final
     mod_cols = find_module_columns(raw_headers)
-    final_col = find_final_grade_column(raw_headers)
+    final_col = _elegir_columna_nota_final(
+        ws, raw_headers, valor_efectivo=valor_efectivo
+    )
 
     # Columnas de identificación básica
     col_org_id = 1
@@ -308,7 +395,7 @@ def parse_notas_archivo(
         # Extraer calificaciones por módulo
         califs: Dict[str, TracedValue] = {}
         for m_num, c_idx in mod_cols.items():
-            cell_val = ws.cell(r, c_idx).value
+            cell_val = valor_efectivo(ws.cell(r, c_idx), r, c_idx)
             nota_num = _parse_nota(cell_val)
             if nota_num is None and cell_val is not None:
                 nota_num = cell_val  # Preservar valor original si no es parseable como número
@@ -319,7 +406,7 @@ def parse_notas_archivo(
         # Nota final
         nota_final_traced = None
         if final_col:
-            final_v = ws.cell(r, final_col).value
+            final_v = valor_efectivo(ws.cell(r, final_col), r, final_col)
             fn_num = _parse_nota(final_v)
             if fn_num is not None:
                 nota_final_traced = make_traced(
@@ -395,4 +482,6 @@ def parse_notas_archivo(
         estudiantes.append(est)
 
     wb.close()
+    if wb_valores is not None:
+        wb_valores.close()
     return estudiantes, secciones_map
