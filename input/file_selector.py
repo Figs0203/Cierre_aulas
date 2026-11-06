@@ -26,6 +26,116 @@ from security.validation_files import (
 )
 
 
+def select_multiple_files_via_dialog(
+    title: str, file_types: list[tuple[str, str]] | None = None
+) -> Optional[list[str]]:
+    """Abre el diálogo nativo permitiendo seleccionar VARIOS archivos.
+
+    Returns:
+        Lista de rutas seleccionadas, o None si el usuario canceló o no hay GUI.
+    """
+    if file_types is None:
+        file_types = [("Archivos Excel", "*.xlsx"), ("Todos los archivos", "*.*")]
+
+    try:
+        import tkinter as tk
+        from tkinter import filedialog
+
+        root = tk.Tk()
+        root.withdraw()
+        root.attributes("-topmost", True)
+
+        file_paths = filedialog.askopenfilenames(
+            title=title,
+            filetypes=file_types,
+        )
+
+        root.destroy()
+
+        seleccionados = [str(Path(p).resolve()) for p in (file_paths or []) if str(p).strip()]
+        return seleccionados or None
+    except Exception:
+        return None
+
+
+def _validar_archivo(candidate: Path) -> list[str]:
+    """Validaciones de seguridad de un archivo individual (existe, extensión, no auxiliar)."""
+    errs: list[str] = []
+    errs.extend(validate_file_exists(candidate))
+    if candidate.exists():
+        errs.extend(validate_file_extension(candidate))
+        errs.extend(validate_not_auxiliary_file(candidate))
+    return errs
+
+
+def prompt_for_multiple_files(
+    role_description: str,
+    default_hint: str = "",
+    use_gui: bool = True,
+) -> list[Path]:
+    """Solicita varios archivos del mismo tipo (p. ej. las Notas de varias aulas).
+
+    Intenta primero el diálogo de selección múltiple y, si no está disponible o
+    el usuario prefiere consola, permite ingresar rutas una por una (ENTER vacío
+    para terminar).
+
+    Returns:
+        Lista de rutas validadas (al menos una).
+    """
+    print(f"\n📁 Seleccionar archivos: {role_description}")
+    if default_hint:
+        print(f"   (Nombre habitual: {default_hint})")
+
+    if use_gui:
+        print("   [Abriendo ventana de selección múltiple...]")
+        seleccionados = select_multiple_files_via_dialog(
+            f"Seleccionar: {role_description} (puede elegir varios)"
+        )
+        if seleccionados:
+            validos: list[Path] = []
+            errores: list[str] = []
+            for ruta in seleccionados:
+                candidate = Path(ruta)
+                errs = _validar_archivo(candidate)
+                if errs:
+                    errores.extend(f"{candidate.name}: {e}" for e in errs)
+                else:
+                    validos.append(candidate.resolve())
+            if validos and not errores:
+                for path in validos:
+                    print(f"   ✅ Archivo seleccionado: {path.name}")
+                return validos
+            if errores:
+                print("   ⚠️ Algunos archivos no son válidos:")
+                for err in errores:
+                    print(f"      {err}")
+
+    print("   Ingrese las rutas una por una (ENTER vacío para terminar):")
+    validos = []
+    while True:
+        try:
+            entrada = input("   Ruta del archivo: ").strip().strip('"').strip("'")
+        except (EOFError, KeyboardInterrupt):
+            print("\nOperación cancelada por el usuario.")
+            raise SystemExit(0)
+
+        if not entrada:
+            if validos:
+                return validos
+            print("   ⚠️ Debe indicar al menos un archivo.")
+            continue
+
+        candidate = Path(entrada)
+        errs = _validar_archivo(candidate)
+        if errs:
+            for err in errs:
+                print(f"   {err}")
+            continue
+
+        validos.append(candidate.resolve())
+        print(f"   ✅ Archivo añadido: {candidate.name}")
+
+
 def select_file_via_dialog(title: str, file_types: list[tuple[str, str]] | None = None) -> Optional[str]:
     """Intenta abrir un diálogo de selección de archivo nativo del sistema operativo.
 

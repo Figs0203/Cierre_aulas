@@ -75,10 +75,11 @@ El menú de `main.py` (fuente de verdad; el README puede estar desactualizado):
 | 5 | Aplicar Cierre Directo en oficiales (con backup) |
 | 6 | Restaurar Último Backup |
 | 7 | Diagnóstico de Cruce de Identidades (sin datos personales) |
+| 8 | Cierre por Lotes (varias aulas; Sistematización y Control compartidos) |
 
 ## 🧩 Arquitectura (módulos)
 
-- `main.py` — CLI / menú interactivo (modos 0–6).
+- `main.py` — CLI / menú interactivo (modos 0–8, incluido el cierre por lotes).
 - `core/` — `enums.py` (MatchKey, StudentStatus, AulaReadiness…),
   `models.py` (AulaMetadata, AulaCierreResult, ClaseGroup, Estudiante*),
   `traceability.py` (`TracedValue` y `ValidationLog`: valor + procedencia
@@ -309,5 +310,17 @@ oficiales de la biblioteca. Ajustes recientes (formato oficial):
     `sistematizacion_promedios_actualizados`); por defecto se respeta la regla de
     no sobrescribir.
 
-Última verificación: **143 tests OK** (`python -m pytest tests -q`). El grafo de
+- **Cierre por lotes (Modo 8)**: `main.py:handle_batch_cierre_mode` permite cerrar
+  varias aulas en una sola pasada. La **Sistematización** y el **Control de Aulas**
+  se piden una sola vez (compartidos); las **Notas** se eligen en un diálogo de
+  selección múltiple y el **archivo de Certificados** puede ser compartido o
+  distinto por aula (con opción de reutilizar el anterior con ENTER). El código de
+  aula se deduce del nombre de las Notas (`_infer_aula_code`, ej.
+  `ABBUEI227_...xlsx → ABBUEI227`). Primero simula todas las aulas y muestra un
+  resumen consolidado; con una sola confirmación `SI` aplica cada aula como un
+  cierre independiente (respaldo único actualizado por aula, deduplicación y
+  numeración real de certificados al escribir). Si un aula falla de forma crítica,
+  se detiene el lote y se informa cuáles quedaron cerradas.
+
+Última verificación: **146 tests OK** (`python -m pytest tests -q`). El grafo de
 conocimiento se regenera con `graphify update .` tras cada cambio de código.

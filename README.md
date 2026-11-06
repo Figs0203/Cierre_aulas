@@ -43,9 +43,13 @@ El asistente desplegará un menú interactivo con las siguientes opciones:
 ```text
 MENU PRINCIPAL:
   [1] Modo 1 — Descubrimiento Técnico Local (Fase 0) [HABILITADO]
-  [2] Modo 2 — Simulación Previa [BLOQUEADO: Requiere validación de reglas]
-  [3] Modo 3 — Generar Archivo Auxiliar de Cierre [BLOQUEADO: Requiere validación de reglas]
+  [2] Modo 2 — Simulación Previa (Validación en Memoria) [HABILITADO]
+  [3] Modo 3 — Generar Archivo Auxiliar de Cierre [HABILITADO]
   [4] Verificación de Arquitectura Offline
+  [5] Modo 5 — Aplicar Cierre Directo en Archivos Oficiales (Con Backup y Protección)
+  [6] Modo 6 — Restaurar Último Backup en Archivos Oficiales
+  [7] Diagnóstico de Cruce de Identidades (Notas ↔ Sistematización, sin datos personales)
+  [8] Modo 8 — Cierre por Lotes (varias aulas; Sistematización y Control compartidos)
   [0] Salir
 ```
 
@@ -58,6 +62,24 @@ MENU PRINCIPAL:
 3. Opcionalmente ingrese el código del aula a buscar (ej. `ABBUEI154`).
 4. El sistema analizará los 4 archivos en memoria y generará un informe técnico local en `reports/discovery_YYYYMMDD_HHMMSS.txt`.
 5. Al finalizar, el programa certificará la inmutabilidad de los 4 archivos comparando sus hashes SHA-256.
+
+### Cierre por lotes (Modo 8)
+
+Para cerrar varias aulas sin repetir la selección de los archivos compartidos:
+
+1. Seleccione la opción `8`.
+2. Elija **una vez** el `Control_Aulas_Formadores_2026.xlsx` y la
+   `Sistematizacion_Cursos_COIN_2026.xlsx` (se reutilizan para todas las aulas).
+3. Seleccione **varias Notas a la vez** en la ventana de archivos.
+4. Indique si todas las aulas usan el mismo archivo de certificados (si no,
+   puede reutilizar el anterior con ENTER para cada aula).
+5. Confirme el código de aula de cada Notas (se deduce del nombre del archivo) y
+   el código de curso para certificados (por defecto, el mismo código de aula).
+6. Revise el resumen consolidado y confirme `SI` una sola vez.
+
+Cada aula se aplica como un cierre independiente: respaldo único actualizado,
+certificados verificados y numeración calculada sobre el archivo real. Si un aula
+falla de forma crítica, el lote se detiene e informa cuáles quedaron cerradas.
 
 ---
 

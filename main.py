@@ -13,6 +13,7 @@ Principios de funcionamiento:
 
 from __future__ import annotations
 
+import re
 import sys
 import warnings
 from pathlib import Path
@@ -25,7 +26,11 @@ _PROJECT_ROOT = Path(__file__).resolve().parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-from input.file_selector import select_all_four_files
+from input.file_selector import (
+    prompt_for_file,
+    prompt_for_multiple_files,
+    select_all_four_files,
+)
 from output.direct_updater import (
     apply_direct_cierre,
     files_not_writable,
@@ -59,10 +64,11 @@ def show_menu() -> str:
     print("  [5] Modo 5 — Aplicar Cierre Directo en Archivos Oficiales (Con Backup y Protección)")
     print("  [6] Modo 6 — Restaurar Último Backup en Archivos Oficiales")
     print("  [7] Diagnóstico de Cruce de Identidades (Notas ↔ Sistematización, sin datos personales)")
+    print("  [8] Modo 8 — Cierre por Lotes (varias aulas; Sistematización y Control compartidos)")
     print("  [0] Salir")
     print("-" * 76)
     try:
-        choice = input("Seleccione una opción (0-7): ").strip()
+        choice = input("Seleccione una opción (0-8): ").strip()
         return choice
     except (EOFError, KeyboardInterrupt):
         return "0"
@@ -467,6 +473,376 @@ def handle_direct_cierre_mode():
     print("=" * 76)
 
 
+def _infer_aula_code(path: Path) -> str:
+    """Intenta deducir el código de aula del nombre del archivo de Notas.
+
+    Ej.: 'ABBUEI227_E_FINANZAS_MAF_1.xlsx' → 'ABBUEI227'; 'CMI122_PSICOLOGIA_2.xlsx' → 'CMI122'.
+    """
+    match = re.match(r"([A-Za-z]{2,}\d{2,})", path.stem)
+    return match.group(1).upper() if match else ""
+
+
+def _leer_linea(mensaje: str, default: str = "") -> str | None:
+    """Lee una línea; devuelve None si el usuario cancela (Ctrl+C / EOF)."""
+    try:
+        valor = input(mensaje).strip()
+    except (EOFError, KeyboardInterrupt):
+        return None
+    return valor or default
+
+
+def _pedir_ruta_certificados(anterior: Path | None) -> Path | None:
+    """Pide el archivo de certificados, permitiendo reutilizar el anterior."""
+    if anterior is None:
+        return prompt_for_file(
+            role_description="4. Control de Códigos / Certificados",
+            role_key="certificados",
+            default_hint="Control_codigos_certificados_ABBUEI.xlsx",
+            use_gui=True,
+        )
+
+    print(f"   Archivo de certificados anterior: {anterior}")
+    while True:
+        entrada = _leer_linea(
+            "   Ruta del archivo de certificados (ENTER para usar el mismo): "
+        )
+        if entrada is None:
+            return None
+        if not entrada:
+            return anterior
+        candidato = Path(entrada).strip('"').strip("'")
+        if not candidato.exists():
+            print("   ⚠️ El archivo no existe. Intente de nuevo.")
+            continue
+        if candidato.suffix.lower() != ".xlsx":
+            print("   ⚠️ Debe ser un archivo .xlsx.")
+            continue
+        return candidato.resolve()
+
+
+def handle_batch_cierre_mode():
+    """Cierre directo de VARIAS aulas en una sola operación.
+
+    La Sistematización y el Control de Aulas se piden una sola vez y se
+    reutilizan para todas las aulas. Las Notas y el archivo de Certificados
+    pueden variar por aula.
+    """
+    print("\n" + "=" * 76)
+    print("INICIANDO MODO 8: CIERRE POR LOTES (VARIAS AULAS)")
+    print("=" * 76)
+    print("Cierra varias aulas seguidas sin volver a seleccionar los archivos compartidos:")
+    print("  • Control de Aulas de Formadores  → se pide UNA vez (compartido)")
+    print("  • Sistematización de Cursos COIN → se pide UNA vez (compartida)")
+    print("  • Notas de cada aula             → se eligen varias a la vez")
+    print("  • Certificados                   → compartido o uno por aula")
+    print("  • Notas permanece siempre como SOLO LECTURA.")
+    print("  • Cada aula se aplica como un cierre independiente: el respaldo único se")
+    print("    actualiza antes de cada una y, si un aula falla, las anteriores quedan.")
+    print()
+
+    # ------------------------------------------------------------------
+    # 1. Archivos compartidos
+    # ------------------------------------------------------------------
+    try:
+        control = prompt_for_file(
+            role_description="1. Control de Aulas de Formadores (COMPARTIDO para todas las aulas)",
+            role_key="control_aulas",
+            default_hint="Control_Aulas_Formadores_2026.xlsx",
+            use_gui=True,
+        )
+        sistematizacion = prompt_for_file(
+            role_description="2. Sistematización de Cursos COIN (COMPARTIDA para todas las aulas)",
+            role_key="sistematizacion",
+            default_hint="Sistematizacion_Cursos_COIN_2026.xlsx",
+            use_gui=True,
+        )
+    except SystemExit:
+        return
+
+    files_base = {"control_aulas": control, "sistematizacion": sistematizacion}
+    problemas_acceso = files_not_writable(files_base)
+    if problemas_acceso:
+        print("\n🔴 NO SE PUEDE INICIAR EL LOTE:")
+        for problema in problemas_acceso:
+            print(f"   • {problema}")
+        print("\nCierre los archivos compartidos en Excel y vuelva a intentarlo.")
+        return
+
+    # ------------------------------------------------------------------
+    # 2. Notas (varias a la vez)
+    # ------------------------------------------------------------------
+    try:
+        notas_paths = prompt_for_multiple_files(
+            role_description="3. Notas de las aulas a cerrar (puede elegir varias)",
+            default_hint="ABBUEI227_E_FINANZAS_MAF_1.xlsx, CMI122_PSICOLOGIA_2.xlsx, ...",
+            use_gui=True,
+        )
+    except SystemExit:
+        return
+    if not notas_paths:
+        print("\n❌ No se seleccionó ningún archivo de Notas.")
+        return
+
+    # ------------------------------------------------------------------
+    # 3. ¿Certificados compartidos?
+    # ------------------------------------------------------------------
+    print("\nPASO 3 — Archivo de Certificados:")
+    respuesta = _leer_linea(
+        "   ¿Todas las aulas usan el MISMO archivo de certificados? (SI/NO) [SI]: ",
+        "SI",
+    )
+    if respuesta is None:
+        print("\n❌ Operación cancelada.")
+        return
+
+    certificados_comun: Path | None = None
+    if respuesta.strip().upper() in ("SI", "S", ""):
+        try:
+            certificados_comun = prompt_for_file(
+                role_description="4. Control de Códigos / Certificados (COMPARTIDO)",
+                role_key="certificados",
+                default_hint="Control_codigos_certificados_ABBUEI.xlsx",
+                use_gui=True,
+            )
+        except SystemExit:
+            return
+        problemas_cert = files_not_writable({"certificados": certificados_comun})
+        if problemas_cert:
+            print("\n🔴 NO SE PUEDE INICIAR EL LOTE:")
+            for problema in problemas_cert:
+                print(f"   • {problema}")
+            print("\nCierre el archivo de certificados en Excel y vuelva a intentarlo.")
+            return
+
+    # ------------------------------------------------------------------
+    # 4. Configurar cada aula y simular (sin escribir nada)
+    # ------------------------------------------------------------------
+    items: list[dict] = []
+    aulas_vistas: set[str] = set()
+    notas_vistas: set[Path] = set()
+    certificado_previo = certificados_comun
+
+    for idx, notas in enumerate(notas_paths, start=1):
+        print(f"\n--- Aula {idx} de {len(notas_paths)}: {notas.name} ---")
+
+        if notas.resolve() in notas_vistas:
+            print("   ⚠️ Ese archivo de Notas ya fue agregado. Se omite.")
+            continue
+
+        default_aula = _infer_aula_code(notas)
+        etiqueta = f"   Código de aula{' [' + default_aula + ']' if default_aula else ''}: "
+        aula = _leer_linea(etiqueta, default_aula)
+        if aula is None:
+            print("\n❌ Operación cancelada.")
+            return
+        if not aula:
+            print("   ⚠️ Debe indicar el código de aula. Se omite esta aula.")
+            continue
+        aula = aula.strip().upper()
+        if aula in aulas_vistas:
+            print(f"   ⚠️ El aula '{aula}' ya está en el lote. Se omite.")
+            continue
+
+        curso = _leer_linea(
+            f"   Código de curso para certificados [{aula}]: ", aula
+        )
+        if curso is None:
+            print("\n❌ Operación cancelada.")
+            return
+        curso = (curso or aula).strip().upper()
+
+        if certificados_comun is None:
+            try:
+                certificado = _pedir_ruta_certificados(certificado_previo)
+            except SystemExit:
+                return
+            if certificado is None:
+                print("\n❌ Operación cancelada.")
+                return
+            certificado_previo = certificado
+        else:
+            certificado = certificados_comun
+
+        problemas_cert = files_not_writable({"certificados": certificado})
+        if problemas_cert:
+            for problema in problemas_cert:
+                print(f"   ⚠️ {problema}")
+            print("   Se omite esta aula (no se podría escribir su certificado).")
+            continue
+
+        files = {
+            "control_aulas": control,
+            "sistematizacion": sistematizacion,
+            "notas": notas,
+            "certificados": certificado,
+        }
+
+        print("   ⏳ Analizando datos en memoria...")
+        try:
+            res, _, _, _ = run_cierre_pipeline(
+                file_paths=files,
+                target_aula=aula,
+                codigo_curso=curso,
+                is_simulation=True,
+            )
+        except Exception as exc:  # noqa: BLE001 - una aula no bloquea el lote
+            print(f"   ❌ Error al analizar el aula '{aula}': {exc}. Se omite.")
+            continue
+
+        if res.total_estudiantes == 0:
+            print(
+                f"   ⚠️ No se encontraron estudiantes del aula '{aula}' en Sistematización. "
+                "Se omite."
+            )
+            continue
+
+        aprobados = sum(
+            1
+            for cg in res.clases
+            for m in cg.matches
+            if str(m.estudiante_sist.estado_calculado or "").strip() == "Aprobó"
+        )
+        items.append({
+            "aula": aula,
+            "curso": curso,
+            "files": files,
+            "result": res,
+            "aprobados": aprobados,
+        })
+        aulas_vistas.add(aula)
+        notas_vistas.add(notas.resolve())
+
+    if not items:
+        print("\n❌ No quedó ninguna aula válida para cerrar.")
+        return
+
+    # ------------------------------------------------------------------
+    # 5. Resumen consolidado y confirmación única
+    # ------------------------------------------------------------------
+    total_certificados = sum(item["aprobados"] for item in items)
+    print("\n" + "=" * 76)
+    print("RESUMEN DEL LOTE")
+    print("=" * 76)
+    print(f"• Control de Aulas (compartido): {control}")
+    print(f"• Sistematización (compartida): {sistematizacion}")
+    if certificados_comun:
+        print(f"• Certificados (compartido): {certificados_comun}")
+    else:
+        print("• Certificados: un archivo por aula (se muestra en la aplicación)")
+    print(f"\n• Aulas a cerrar: {len(items)}")
+    for pos, item in enumerate(items, start=1):
+        res = item["result"]
+        print(
+            f"  {pos}. Aula {item['aula']} (curso {item['curso']}): "
+            f"{len(res.clases)} clase(s), {res.total_estudiantes} estudiantes, "
+            f"{res.total_matched} con notas, {res.total_excluded} excluidos, "
+            f"{item['aprobados']} aprobados"
+        )
+    print(f"\n👉 Se anexarán {total_certificados} certificados en total.")
+    print("   (La numeración se calcula al aplicar cada aula, sobre el archivo real.)")
+
+    print("\n🎯 NOTA FINAL YA ESCRITA EN SISTEMATIZACIÓN:")
+    respuesta_nota = _leer_linea(
+        "   ¿Corregir notas finales existentes que no coincidan con Notas? (SI/NO): ",
+        "NO",
+    )
+    if respuesta_nota is None:
+        print("\n❌ Operación cancelada.")
+        return
+    actualizar_nota_final = respuesta_nota.strip().upper() == "SI"
+
+    try:
+        confirm = input(
+            f"\n¿Aplicar el cierre de las {len(items)} aula(s) en los archivos oficiales? "
+            "(Escriba 'SI' para confirmar): "
+        ).strip()
+    except (EOFError, KeyboardInterrupt):
+        print("\n❌ Operación cancelada.")
+        return
+    if confirm != "SI":
+        print("\n❌ Operación cancelada por el usuario. Ningún archivo fue modificado.")
+        return
+
+    # ------------------------------------------------------------------
+    # 6. Aplicar secuencialmente
+    # ------------------------------------------------------------------
+    print("\n⏳ Aplicando el cierre de las aulas...")
+    exitosas: list[str] = []
+    con_novedades: list[tuple[str, str]] = []
+    respaldos: dict[str, Path] = {}
+    total_anexados = 0
+
+    for pos, item in enumerate(items, start=1):
+        print(f"\n--- Aplicando {pos}/{len(items)}: aula {item['aula']} ---")
+        try:
+            report = apply_direct_cierre(
+                file_paths=item["files"],
+                result=item["result"],
+                codigo_curso=item["curso"],
+                metadatos_control=item["result"].metadatos_control,
+                start_consecutivo=item["result"].start_consecutivo,
+                actualizar_nota_final_existente=actualizar_nota_final,
+            )
+        except Exception as exc:  # noqa: BLE001 - se informa y se detiene el lote
+            print(f"   ❌ Error crítico al aplicar: {exc}")
+            con_novedades.append((item["aula"], str(exc)))
+            print("   ⛔ Se detiene el lote para no seguir sobre archivos inconsistentes.")
+            break
+
+        total_anexados += report.certificados_rows_appended
+        for respaldo in report.backups_created:
+            respaldos[str(respaldo)] = respaldo
+
+        if report.errors:
+            for err in report.errors:
+                print(f"   ❌ {err}")
+        if report.warnings:
+            for adv in report.warnings:
+                print(f"   ⚠️ {adv}")
+
+        if report.is_successful:
+            print(
+                f"   ✅ Aula cerrada. Certificados anexados: "
+                f"{report.certificados_rows_appended}"
+                + (
+                    f" (hoja '{report.certificados_hoja}', filas "
+                    f"{report.certificados_fila_inicial}-{report.certificados_fila_final})"
+                    if report.certificados_fila_inicial
+                    else ""
+                )
+            )
+            exitosas.append(item["aula"])
+        else:
+            detalle = "; ".join(report.errors) or "con errores"
+            con_novedades.append((item["aula"], detalle))
+            print(f"   ⚠️ Aula con novedades: {detalle}")
+            if report.fallo_critico:
+                print("   ⛔ Fallo crítico: se detiene el lote.")
+                break
+
+    # ------------------------------------------------------------------
+    # 7. Informe final del lote
+    # ------------------------------------------------------------------
+    print("\n" + "=" * 76)
+    print("RESULTADO DEL LOTE")
+    print("=" * 76)
+    print(f"• Aulas cerradas correctamente: {len(exitosas)} de {len(items)}")
+    if exitosas:
+        print("  " + ", ".join(exitosas))
+    if con_novedades:
+        print(f"• Aulas con novedades ({len(con_novedades)}):")
+        for aula, detalle in con_novedades:
+            print(f"  - {aula}: {detalle}")
+    print(f"• Certificados anexados en total: {total_anexados}")
+    if respaldos:
+        print("\n📂 Respaldo único actualizado (estado previo a cada cierre):")
+        for ruta in respaldos.values():
+            print(f"   • {ruta}")
+    print("\n↳ Si alguna aula quedó con novedades, revise los mensajes anteriores.")
+    print("  Para volver al estado previo use la opción [6] (Restaurar respaldo).")
+    print("=" * 76)
+
+
 def handle_restore_backup_mode():
     print("\n" + "=" * 76)
     print("INICIANDO MODO 6: RESTAURAR EL RESPALDO ÚNICO DE LOS ARCHIVOS OFICIALES")
@@ -596,11 +972,13 @@ def main():
             handle_restore_backup_mode()
         elif choice == "7":
             handle_diagnose_mode()
+        elif choice == "8":
+            handle_batch_cierre_mode()
         elif choice in ("0", "q", "salir", "exit"):
             print("\nSaliendo del asistente. ¡Hasta pronto!")
             sys.exit(0)
         else:
-            print("\n⚠️ Opción no válida. Por favor seleccione 0, 1, 2, 3, 4, 5, 6 o 7.")
+            print("\n⚠️ Opción no válida. Por favor seleccione 0, 1, 2, 3, 4, 5, 6, 7 u 8.")
 
 
 if __name__ == "__main__":
