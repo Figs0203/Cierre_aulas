@@ -26,7 +26,9 @@ y los tests las protegen:
    vacías (y los nombres a MAYÚSCULAS); ninguna celda preexistente con datos se
    altera y **ninguna otra parte del libro se reserializa**: el resto del paquete
    `.xlsx` se conserva byte a byte (`output/xlsx_patcher.py`). Notas es siempre
-   solo lectura.
+   solo lectura. **Única excepción autorizada**: si el usuario lo pide en el
+   Modo 5 (`actualizar_nota_final_existente`), se corrige la columna de nota
+   final de Sistematización cuando ya tiene un valor distinto al de Notas.
 5. **Matching ultra-conservador**: prohibido asignar notas por coincidencia
    difusa de nombres. Se exige doble factor de identidad
    (Documento + Nombre/Correo) — `matching/engine.py`.
@@ -288,5 +290,24 @@ oficiales de la biblioteca. Ajustes recientes (formato oficial):
   anterior si aún no migró) y el Modo 6 restaura ese estado previo al último
   cierre.
 
-Última verificación: **139 tests OK** (`python -m pytest tests -q`). El grafo de
+- **Cierre a prueba de bloqueos y re-ejecuciones (reporte real, 2026-11-06)**:
+  - **Preflight**: antes de crear respaldos, `files_not_writable` abre cada
+    oficial en `r+b`; si está abierto en Excel o es de solo lectura, el Modo 5
+    aborta con un mensaje accionable y no modifica nada (antes el error aparecía
+    a mitad del cierre como `[WinError 5] Acceso denegado`).
+  - **Rollback**: si un paso falla de forma crítica (`fallo_critico`: escritura,
+    bloqueo o verificación de certificados), `_restore_after_error` devuelve los
+    tres oficiales a su estado previo usando los respaldos del inicio. Un error
+    de un registro (p. ej. discrepancia de identidad) NO revierte todo:
+    se mantiene el aislamiento de errores por registro.
+  - `XlsxPatcher._write` traduce el `PermissionError` de `os.replace` a un
+    mensaje claro (archivo abierto en Excel / solo lectura / OneDrive).
+  - **Corrección opcional de la nota final ya escrita**: el Modo 5 pregunta
+    *"¿Corregir notas finales existentes que no coincidan con Notas? (SI/NO)"*.
+    Con `actualizar_nota_final_existente=True` se sobrescribe **solo** la columna
+    de promedio cuando difiere del valor de Notas (contador
+    `sistematizacion_promedios_actualizados`); por defecto se respeta la regla de
+    no sobrescribir.
+
+Última verificación: **143 tests OK** (`python -m pytest tests -q`). El grafo de
 conocimiento se regenera con `graphify update .` tras cada cambio de código.

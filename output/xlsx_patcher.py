@@ -823,7 +823,14 @@ class XlsxPatcher:
                 for name, data in changed_parts.items():
                     if name not in written:
                         zf_out.writestr(name, data)
-            os.replace(tmp_path, self.path)
+            try:
+                os.replace(tmp_path, self.path)
+            except PermissionError as exc:
+                raise PermissionError(
+                    f"No se pudo escribir '{self.path.name}': el archivo está abierto "
+                    "en Excel (u otro programa), es de solo lectura o está bloqueado "
+                    "por OneDrive/antivirus. Ciérrelo y vuelva a intentar el cierre."
+                ) from exc
         finally:
             if tmp_path.exists():
                 try:

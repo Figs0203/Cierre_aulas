@@ -26,7 +26,11 @@ if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
 from input.file_selector import select_all_four_files
-from output.direct_updater import apply_direct_cierre, restore_last_backup
+from output.direct_updater import (
+    apply_direct_cierre,
+    files_not_writable,
+    restore_last_backup,
+)
 from processing.cierre_orchestrator import run_cierre_pipeline
 from security.integrity import compute_sha256, verify_integrity
 from security.offline_check import check_offline_compliance
@@ -266,6 +270,19 @@ def handle_direct_cierre_mode():
 
     files = select_all_four_files(use_gui=True)
 
+    # Preflight: si un oficial está abierto en Excel o es de solo lectura, se
+    # avisa ANTES de analizar y de tocar cualquier archivo.
+    problemas_acceso = files_not_writable(files)
+    if problemas_acceso:
+        print("\n🔴 NO SE PUEDE INICIAR EL CIERRE:")
+        for problema in problemas_acceso:
+            print(f"   • {problema}")
+        print(
+            "\nCierre los archivos en Excel (o quite el atributo de solo lectura) "
+            "y vuelva a intentarlo. No se modificó ningún archivo."
+        )
+        return
+
     print("\n🔍 Ingrese el código del aula virtual a cerrar (ej. ABBUEI205):")
     while True:
         try:
@@ -324,11 +341,30 @@ def handle_direct_cierre_mode():
     print("    carpeta '_backups_cierre/' con el estado previo a la automatización.")
     print("  • Ninguna celda preexistente con datos será destruida ni alterada.")
     print("  • Los nombres y apellidos de los estudiantes se estandarizarán a MAYÚSCULAS.")
-    print("  • Solo se escribirán notas y estados en celdas que estén estrictamente vacías.")
+    print("  • Solo se escribirán notas y estados en celdas estrictamente vacías")
+    print("    (salvo que autorice corregir una nota final ya escrita).")
     print("  • El archivo de notas permanecerá 100% como solo lectura.")
     print("  • NO se perderá ninguna función de Excel: listas de validación, formato")
     print("    condicional, controles, tablas dinámicas, gráficos, imágenes ni fórmulas.")
     print("!" * 76)
+
+    # La nota final ya escrita solo se corrige si el usuario lo autoriza. Es útil
+    # cuando un cierre anterior dejó promedios equivocados en Sistematización.
+    print("\n🎯 NOTA FINAL YA ESCRITA EN SISTEMATIZACIÓN:")
+    print("  Por seguridad, el cierre no sobrescribe celdas con datos. Si una nota")
+    print("  final existente no coincide con el archivo de Notas, puede autorizar")
+    print("  aquí su corrección (solo se toca esa columna).")
+    try:
+        resp_nota = input(
+            "  ¿Corregir notas finales existentes que no coincidan con Notas? (SI/NO): "
+        ).strip().upper()
+    except (EOFError, KeyboardInterrupt):
+        resp_nota = "NO"
+    actualizar_nota_final = resp_nota == "SI"
+    if actualizar_nota_final:
+        print("  ✅ Se corregirán las notas finales que no coincidan con Notas.")
+    else:
+        print("  ↳ Se mantienen intactas las notas finales ya escritas.")
 
     try:
         confirm = input("\n¿Está seguro de aplicar estos cambios directamente en los archivos oficiales? (Escriba 'SI' para confirmar): ").strip()
@@ -347,6 +383,7 @@ def handle_direct_cierre_mode():
             codigo_curso=codigo_curso,
             metadatos_control=res.metadatos_control,
             start_consecutivo=res.start_consecutivo,
+            actualizar_nota_final_existente=actualizar_nota_final,
         )
     except Exception as e:
         print(f"\n❌ Error crítico durante la actualización: {e}")
@@ -372,6 +409,11 @@ def handle_direct_cierre_mode():
             print(
                 f"   • Sistematización — Notas finales no copiadas (Notas no las trae): "
                 f"{report.sistematizacion_promedios_no_copiados}"
+            )
+        if report.sistematizacion_promedios_actualizados:
+            print(
+                f"   • Sistematización — Notas finales corregidas (sobrescritas): "
+                f"{report.sistematizacion_promedios_actualizados}"
             )
         print(f"   • Certificados — Filas de aprobados anexadas al final: {report.certificados_rows_appended}")
         if report.certificados_fila_inicial:

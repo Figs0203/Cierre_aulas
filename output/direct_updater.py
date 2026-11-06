@@ -102,6 +102,8 @@ class DirectUpdateReport:
     sistematizacion_untouched_cells: int = 0
     # Estudiantes cuyo archivo de Notas no traía nota final (no se inventa promedio)
     sistematizacion_promedios_no_copiados: int = 0
+    # Notas finales ya escritas que se corrigieron con el valor de Notas (opt-in).
+    sistematizacion_promedios_actualizados: int = 0
     certificados_rows_appended: int = 0
     # Ubicación exacta de lo anexado, para que el usuario pueda comprobarlo:
     certificados_hoja: str = ""
@@ -115,6 +117,9 @@ class DirectUpdateReport:
     certificados_previos: int = 0
     # Aprobados que ya estaban registrados y por tanto NO se duplicaron.
     certificados_omitidos_duplicados: int = 0
+    # True si falló un paso completo (escritura, bloqueo, verificación). Solo en
+    # ese caso se revierten los archivos; un error de un registro no revierte todo.
+    fallo_critico: bool = False
     control_aulas_classes_marked: int = 0
     # Clases que ya tenían fecha de cierre (no se tocaron) o que no se hallaron.
     control_aulas_classes_already_marked: int = 0
@@ -1346,6 +1351,102 @@ def _verify_certificate_rows(
         wb.close()
 
 
+def _valores_equivalentes(actual: Any, nuevo: Any) -> bool:
+    """True si dos valores de celda representan la misma nota.
+
+    Compara texto y números (con coma o punto decimal, hasta 9 decimales).
+    """
+    if actual is None or nuevo is None:
+        return False
+    texto_actual = str(actual).strip()
+    texto_nuevo = str(nuevo).strip()
+    if texto_actual == texto_nuevo:
+        return True
+    try:
+        return abs(
+            float(texto_actual.replace(",", ".")) - float(texto_nuevo.replace(",", "."))
+        ) < 1e-9
+    except (ValueError, TypeError):
+        return False
+
+
+def _check_file_writable(path: Path) -> Optional[str]:
+    """Devuelve un mensaje accionable si el archivo no se puede escribir.
+
+    Detecta el caso más habitual del cierre: el libro oficial abierto en Excel
+    (o marcado como solo lectura), que en Windows termina en 'WinError 5:
+    acceso denegado' al reemplazar el archivo.
+    """
+    if not path.exists():
+        return f"No existe el archivo '{path.name}'."
+    try:
+        with open(path, "r+b"):
+            pass
+    except PermissionError:
+        return (
+            f"'{path.name}' está abierto en Excel (u otro programa) o es de solo "
+            "lectura. Ciérrelo y vuelva a intentar el cierre."
+        )
+    except OSError as exc:
+        return f"No se pudo comprobar el acceso a '{path.name}': {exc}"
+    return None
+
+
+def files_not_writable(file_paths: Dict[str, Path | str]) -> List[str]:
+    """Revisa que los archivos oficiales que se van a modificar sean escribibles.
+
+    Args:
+        file_paths: Diccionario con las rutas seleccionadas.
+
+    Returns:
+        Lista de mensajes de error (vacía si todos se pueden escribir).
+    """
+    mensajes: List[str] = []
+    for role in ("sistematizacion", "certificados", "control_aulas"):
+        ruta = file_paths.get(role)
+        if not ruta:
+            continue
+        mensaje = _check_file_writable(Path(ruta).resolve())
+        if mensaje:
+            mensajes.append(mensaje)
+    return mensajes
+
+
+def _restore_after_error(
+    report: "DirectUpdateReport",
+    backup_by_role: Dict[str, Path],
+    paths_by_role: Dict[str, Path],
+) -> None:
+    """Revierte los archivos oficiales al estado previo a la ejecución.
+
+    Si un paso falla (por ejemplo, un archivo bloqueado por Excel), no se deja
+    el cierre a medias: se copian de vuelta los respaldos creados al inicio.
+    """
+    restaurados: List[str] = []
+    fallidos: List[str] = []
+    for role, respaldo in backup_by_role.items():
+        destino = paths_by_role.get(role)
+        if not respaldo.exists() or destino is None:
+            continue
+        try:
+            shutil.copy2(respaldo, destino)
+            restaurados.append(destino.name)
+        except Exception as exc:  # noqa: BLE001 - se informa, no se oculta
+            fallidos.append(f"{destino.name}: {exc}")
+
+    if restaurados:
+        report.warnings.append(
+            "Operación revertida: los archivos ya modificados se restauraron desde "
+            "el respaldo previo al cierre (" + ", ".join(restaurados) + ")."
+        )
+    if fallidos:
+        report.warnings.append(
+            "No se pudieron restaurar todos los archivos ("
+            + "; ".join(fallidos)
+            + "). Cierre los archivos en Excel y use la opción [6] (Restaurar respaldo)."
+        )
+
+
 def apply_direct_cierre(
     file_paths: Dict[str, Path | str],
     result: AulaCierreResult,
@@ -1353,6 +1454,7 @@ def apply_direct_cierre(
     metadatos_control: Optional[Dict[str, AulaMetadata]] = None,
     start_consecutivo: int = 1,
     backup_dir: Optional[Path | str] = None,
+    actualizar_nota_final_existente: bool = False,
 ) -> DirectUpdateReport:
     """Aplica el cierre directamente sobre los archivos oficiales con respaldo previo y seguridad de celdas.
 
@@ -1363,6 +1465,9 @@ def apply_direct_cierre(
         metadatos_control: Diccionario opcional {clase_id: AulaMetadata}.
         start_consecutivo: Número correlativo inicial sugerido para Certificados.
         backup_dir: Directorio para las copias de seguridad (opcional).
+        actualizar_nota_final_existente: Si es True, corrige la columna de nota
+            final de Sistematización cuando ya tiene un valor distinto al de
+            Notas (por defecto False: las celdas con datos nunca se sobrescriben).
 
     Returns:
         DirectUpdateReport con las estadísticas de actualización.
@@ -1372,6 +1477,19 @@ def apply_direct_cierre(
     path_sist = Path(file_paths["sistematizacion"]).resolve()
     path_cert = Path(file_paths["certificados"]).resolve()
     path_ctrl = Path(file_paths["control_aulas"]).resolve()
+    paths_by_role = {
+        "sistematizacion": path_sist,
+        "certificados": path_cert,
+        "control_aulas": path_ctrl,
+    }
+
+    # ---------------------------------------------------------
+    # PASO 0: VERIFICAR ACCESO DE ESCRITURA (Excel / solo lectura)
+    # ---------------------------------------------------------
+    problemas_acceso = files_not_writable(file_paths)
+    if problemas_acceso:
+        report.errors.extend(problemas_acceso)
+        return report
 
     # ---------------------------------------------------------
     # PASO 1: GENERACIÓN DE COPIAS DE SEGURIDAD (BACKUP)
@@ -1505,9 +1623,25 @@ def apply_direct_cierre(
                 if val_to_write is None:
                     continue
                 cur_val = ws_sist.cell(r_idx, c_idx).value
-                if cur_val is None or str(cur_val).strip() == "":
+                celda_vacia = cur_val is None or str(cur_val).strip() == ""
+
+                # Única excepción autorizada a la regla de no sobrescritura: si el
+                # usuario lo pide expresamente, se corrige la NOTA FINAL ya escrita
+                # (por ejemplo, un cierre anterior que dejó un promedio equivocado).
+                actualizar_promedio = (
+                    actualizar_nota_final_existente
+                    and c_prom is not None
+                    and c_idx == c_prom
+                    and not celda_vacia
+                    and not _valores_equivalentes(cur_val, val_to_write)
+                )
+
+                if celda_vacia or actualizar_promedio:
                     sheet_sist.set_cell(r_idx, c_idx, val_to_write, has_value=True)
-                    report.sistematizacion_updated_cells += 1
+                    if actualizar_promedio:
+                        report.sistematizacion_promedios_actualizados += 1
+                    else:
+                        report.sistematizacion_updated_cells += 1
                 else:
                     # Celda con datos preexistentes: NO TOCAR
                     report.sistematizacion_untouched_cells += 1
@@ -1551,6 +1685,7 @@ def apply_direct_cierre(
         )
     except Exception as e:
         report.errors.append(f"Error al actualizar Sistematización: {e}")
+        report.fallo_critico = True
 
     # ---------------------------------------------------------
     # PASO 3: ANEXAR EN CERTIFICADOS
@@ -1766,6 +1901,7 @@ def apply_direct_cierre(
                 f"anexadas {fallidas}. Restaure el último respaldo (opción 6) y revise "
                 "el archivo antes de continuar."
             )
+            report.fallo_critico = True
 
         _verify_preservation_and_report(
             report,
@@ -1776,6 +1912,7 @@ def apply_direct_cierre(
         )
     except Exception as e:
         report.errors.append(f"Error al anexar en Certificados: {e}")
+        report.fallo_critico = True
 
     # ---------------------------------------------------------
     # PASO 4: ACTUALIZAR EN CONTROL DE AULAS
@@ -1847,5 +1984,12 @@ def apply_direct_cierre(
         )
     except Exception as e:
         report.errors.append(f"Error al actualizar Control de Aulas: {e}")
+        report.fallo_critico = True
+
+    # ---------------------------------------------------------
+    # PASO 5: SI ALGO FALLÓ, REVERTIR PARA NO DEJAR EL CIERRE A MEDIAS
+    # ---------------------------------------------------------
+    if report.fallo_critico:
+        _restore_after_error(report, backup_by_role, paths_by_role)
 
     return report
