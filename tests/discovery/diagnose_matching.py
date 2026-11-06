@@ -402,14 +402,15 @@ def simulate_full_cierre(file_paths: dict, aula: str) -> None:
     """Simula el CIERRE COMPLETO (Modo 5) sobre COPIAS y valida el XML resultante.
 
     Es la prueba definitiva: replica exactamente lo que hace el Modo 5 (parsers,
-    matching, saneo de enlaces externos, escritura y restauración de extensiones)
-    y valida cada hoja del archivo resultante. Nunca toca los archivos reales.
+    matching, edición quirúrgica de celdas y verificación de preservación) y
+    valida cada hoja del archivo resultante. Nunca toca los archivos reales.
     """
     import shutil
     import tempfile
     import zipfile
 
     from output.direct_updater import apply_direct_cierre
+    from output.xlsx_patcher import sheet_paths, verify_preservation
     from processing.cierre_orchestrator import run_cierre_pipeline
 
     lines = []
@@ -426,6 +427,15 @@ def simulate_full_cierre(file_paths: dict, aula: str) -> None:
         # Conteo de listas de validación ANTES (para confirmar que se preservan)
         dv_before = {role: _count_data_validations(p) for role, p in copies.items() if role != "notas"}
 
+        # Copia congelada de cada oficial para verificar, parte por parte, que el
+        # cierre no pierda nada (listas, formato condicional, controles, etc.).
+        frozen = {}
+        for role in ("sistematizacion", "certificados", "control_aulas"):
+            if role in copies:
+                dst = tmp / f"original_{role}{Path(copies[role]).suffix}"
+                shutil.copy2(copies[role], dst)
+                frozen[role] = dst
+
         result, _, _, _ = run_cierre_pipeline(
             file_paths=copies, target_aula=aula, codigo_curso=aula, is_simulation=True
         )
@@ -440,6 +450,26 @@ def simulate_full_cierre(file_paths: dict, aula: str) -> None:
             lines.append(f"Advertencias: {report.warnings}")
         for resumen in report.validaciones_preservadas.values():
             lines.append(f"  {resumen}")
+
+        # Verificación independiente: ninguna parte del paquete puede perderse.
+        etiquetas = {
+            "sistematizacion": "Sistematización",
+            "certificados": "Certificados",
+            "control_aulas": "Control de Aulas",
+        }
+        for role, original in frozen.items():
+            esperadas = report.hojas_modificadas.get(etiquetas.get(role, ""), set())
+            if not esperadas:
+                # Sin dato del cierre: se toleran las hojas del propio archivo, pero
+                # se sigue verificando que no falte ninguna parte ni lista de datos.
+                with zipfile.ZipFile(original) as z:
+                    esperadas = set(sheet_paths({n: z.read(n) for n in z.namelist()}))
+            info = verify_preservation(
+                original, copies[role], expected_modified_sheets=esperadas
+            )
+            lines.append(f"  {info.resumen()}")
+            for problema in info.problemas:
+                lines.append(f"      ❌ {problema}")
 
         for role in ("sistematizacion", "certificados", "control_aulas"):
             p = copies.get(role)

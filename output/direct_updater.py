@@ -22,10 +22,14 @@ máxima responsabilidad y mecanismos de seguridad de nivel institucional:
 4. Archivo de Notas:
    Se mantiene estrictamente como SOLO LECTURA (no se modifica).
 
-5. Compatibilidad con Tablas Dinámicas (PivotTables):
-   openpyxl no soporta tablas dinámicas. Al guardar un archivo que las contenía,
-   se eliminan para evitar el mensaje de "reparación" de Excel. El archivo original
-   siempre tiene su backup íntegro previo, por lo que no hay pérdida de datos.
+5. Preservación total del libro original (Zero-Loss):
+   El cierre NO vuelve a escribir el libro con openpyxl. Se usa `XlsxPatcher`
+   (`output/xlsx_patcher.py`), que modifica únicamente las celdas concretas dentro
+   de `xl/worksheets/sheetN.xml` y copia byte a byte el resto del paquete. Así se
+   conservan las listas de validación (estándar y `x14`), el formato condicional,
+   los nombres definidos, los controles de formulario, las tablas dinámicas, los
+   gráficos, las imágenes y los vínculos externos. Al final se verifica parte por
+   parte (`verify_preservation`) que no se haya perdido nada.
 """
 
 from __future__ import annotations
@@ -58,32 +62,30 @@ from normalization.dates import (
     parse_date,
 )
 from normalization.text import format_ciclo, format_docente_coin, normalize_document
+from output.xlsx_patcher import BorderSpec, PreservationReport, XlsxPatcher, verify_preservation
 
 # Estilos de bordes oficiales.
 # Todos los bordes se dibujan en negro (mismo color en los cuatro lados) para que
 # sean visibles y consistentes con el formato de los archivos oficiales.
-_BORDER_COLOR = "000000"
+_BORDER_COLOR = "FF000000"
 
-_BORDER_THIN = Border(
-    left=Side(style="thin", color=_BORDER_COLOR),
-    right=Side(style="thin", color=_BORDER_COLOR),
-    top=Side(style="thin", color=_BORDER_COLOR),
-    bottom=Side(style="thin", color=_BORDER_COLOR),
+# La celda normal lleva la caja completa con bordes finos.
+_BORDER_THIN = BorderSpec(
+    left="thin", right="thin", top="thin", bottom="thin", color=_BORDER_COLOR
 )
 
 # La celda de fin de clase conserva los cuatro bordes: los tres lados con el mismo
 # estilo fino que el resto de la tabla y solo el borde inferior en 'medium' (grueso).
-_BORDER_CLASS_SEPARATOR = Border(
-    left=Side(style="thin", color=_BORDER_COLOR),
-    right=Side(style="thin", color=_BORDER_COLOR),
-    top=Side(style="thin", color=_BORDER_COLOR),
-    bottom=Side(style="medium", color=_BORDER_COLOR),
+_BORDER_CLASS_SEPARATOR = BorderSpec(
+    left="thin", right="thin", top="thin", bottom="medium", color=_BORDER_COLOR
 )
 
-_FONT_BODY = Font(name="Calibri", size=10)
-
 # Fuente oficial de la tabla de Certificados (confirmado: Zurich Cn BT 11).
-_FONT_CERTIFICADO = Font(name="Zurich Cn BT", size=11)
+_FONT_CERTIFICADO_NAME = "Zurich Cn BT"
+_FONT_CERTIFICADO_SIZE = 11
+
+# Toda la información de la tabla de Certificados va centrada.
+_ALIGN_CENTER_CERT = '<alignment horizontal="center" vertical="center"/>'
 
 
 @dataclass
@@ -98,8 +100,11 @@ class DirectUpdateReport:
     control_aulas_classes_marked: int = 0
     errors: List[str] = field(default_factory=list)
     warnings: List[str] = field(default_factory=list)
-    # Verificación de listas de validación por archivo (SheetBlocksReport.resumen()).
+    # Verificación de preservación por archivo (PreservationReport.resumen()):
+    # listas de validación antes/después + integridad estructural del paquete.
     validaciones_preservadas: Dict[str, str] = field(default_factory=dict)
+    # Hojas modificadas a propósito en cada archivo (clave: etiqueta del informe).
+    hojas_modificadas: Dict[str, set] = field(default_factory=dict)
 
     @property
     def is_successful(self) -> bool:
@@ -109,9 +114,12 @@ class DirectUpdateReport:
 def _strip_pivot_tables(wb: openpyxl.Workbook) -> int:
     """Elimina todas las tablas dinámicas (PivotTables) de un workbook en memoria.
 
+    **Utilidad de legado.** El cierre directo ya no la usa: al no reserializar el
+    libro con openpyxl, las tablas dinámicas se conservan intactas. Se mantiene
+    porque hay utilidades/tests que la usan sobre libros propios.
+
     openpyxl no soporta PivotTables y produce XML inválido al guardar archivos que
     las contienen, lo que provoca el mensaje de "reparación" de Excel.
-    El archivo original siempre tiene su backup previo, así que no hay pérdida.
 
     Args:
         wb: El workbook a sanear (se modifica en lugar).
@@ -133,6 +141,9 @@ _EXTERNAL_REF_RE = re.compile(r"\[\d+\]")
 
 def _strip_external_links(wb: openpyxl.Workbook) -> int:
     """Elimina las referencias a fórmulas externas (externalLinks) de un workbook.
+
+    **Utilidad de legado.** El cierre directo ya no la usa: como no se reserializa
+    el libro, los vínculos externos se conservan tal como están en el original.
 
     openpyxl no preserva correctamente la caché de valores de las referencias
     externas (`externalLink*.xml`), lo que al guardar produce un XML inconsistente
@@ -170,6 +181,9 @@ def _strip_external_links(wb: openpyxl.Workbook) -> int:
 
 def _resolve_external_link_formulas(wb: openpyxl.Workbook, source_path: Path | str) -> int:
     """Sustituye fórmulas que referencian libros externos por su valor en caché.
+
+    **Utilidad de legado.** El cierre directo ya no la usa: las fórmulas con
+    referencias externas se conservan intactas.
 
     Al guardar con openpyxl y eliminar las referencias externas, las fórmulas que
     apuntaban a otros libros (ej. `=+_xlfn.XLOOKUP(AJ79,[1]ABBUEI!$G:$G,...)`)
@@ -711,6 +725,11 @@ def preserve_sheet_data_blocks(
 ) -> SheetBlocksReport:
     """Restaura y VERIFICA las listas de validación de datos del archivo original.
 
+    **Utilidad de legado.** El cierre directo (Modo 5) ya no la necesita: en lugar
+    de guardar con openpyxl y reponer bloques a posteriori, `XlsxPatcher` edita
+    solo las celdas y conserva el paquete completo. Se mantiene disponible para
+    reparar libros que sí hayan pasado por openpyxl.
+
     Debe invocarse inmediatamente después de `wb.save(...)`, usando como
     `source_path` la copia de seguridad íntegra creada antes de la modificación.
 
@@ -1045,13 +1064,14 @@ def restore_last_backup(
     return resultados
 
 
-def _preserve_sheet_blocks_and_report(
+def _verify_preservation_and_report(
     report: "DirectUpdateReport",
     etiqueta: str,
     output_path: Path | str,
     source_path: Path | str,
-) -> SheetBlocksReport:
-    """Restaura y verifica las listas de validación de un archivo ya guardado.
+    modified_sheets: Optional[set] = None,
+) -> "PreservationReport":
+    """Verifica que el cierre no haya perdido NINGUNA parte del libro oficial.
 
     Nunca lanza excepción: cualquier fallo se registra como advertencia en el
     informe para que el usuario lo vea en consola (y pueda restaurar el respaldo).
@@ -1059,23 +1079,28 @@ def _preserve_sheet_blocks_and_report(
     Args:
         report: Informe de la actualización directa (se completa en el lugar).
         etiqueta: Nombre legible del archivo para el informe (ej. 'Sistematización').
-        output_path: Archivo recién guardado por openpyxl.
+        output_path: Archivo ya actualizado.
         source_path: Respaldo íntegro creado antes de la modificación.
+        modified_sheets: Hojas que el cierre modificó a propósito.
 
     Returns:
-        El `SheetBlocksReport` con el detalle de la preservación.
+        El `PreservationReport` con el detalle de la verificación.
     """
     try:
-        info = preserve_sheet_data_blocks(output_path, source_path)
-    except Exception as exc:  # noqa: BLE001 - la preservación nunca debe romper el cierre
+        info = verify_preservation(
+            source_path,
+            output_path,
+            expected_modified_sheets=modified_sheets or set(),
+        )
+    except Exception as exc:  # noqa: BLE001 - la verificación nunca debe romper el cierre
         mensaje = (
-            f"{etiqueta}: no se pudo verificar la preservación de las listas de "
-            f"validación de datos ({exc})."
+            f"{etiqueta}: no se pudo verificar que el libro original quedara intacto ({exc})."
         )
         report.warnings.append(mensaje)
-        return SheetBlocksReport(archivo=Path(output_path).name, problemas=[mensaje])
+        return PreservationReport(archivo=Path(output_path).name, problemas=[mensaje])
 
     report.validaciones_preservadas[etiqueta] = info.resumen()
+    report.hojas_modificadas[etiqueta] = set(modified_sheets or set())
     for problema in info.problemas:
         report.warnings.append(f"{etiqueta}: {problema}")
     return info
@@ -1128,15 +1153,18 @@ def apply_direct_cierre(
     # PASO 2: ACTUALIZACIÓN EN SISTEMATIZACIÓN
     # ---------------------------------------------------------
     try:
+        # openpyxl se usa SOLO para leer valores y estructura: nunca se guarda con
+        # él. La escritura la hace `XlsxPatcher`, que toca únicamente las celdas
+        # necesarias y conserva byte a byte el resto del paquete (listas de
+        # validación, formato condicional, controles de formulario, tablas
+        # dinámicas, gráficos, imágenes, vínculos externos, etc.).
         wb_sist = openpyxl.load_workbook(path_sist, data_only=False)
-        # Sanear el libro antes de guardar para evitar el aviso de reparación de Excel:
-        #  1) sustituir fórmulas con referencias externas por su valor en caché,
-        #  2) eliminar tablas dinámicas y referencias externas.
-        # El backup previo garantiza la integridad del original.
-        _resolve_external_link_formulas(wb_sist, path_sist)
-        _strip_pivot_tables(wb_sist)
-        _strip_external_links(wb_sist)
         ws_sist = wb_sist["Formato"] if "Formato" in wb_sist.sheetnames else wb_sist.active
+        sheet_name_sist = ws_sist.title
+        patcher_sist = XlsxPatcher(path_sist)
+        sheet_sist = patcher_sist.sheet(sheet_name_sist)
+        border_thin_sist = patcher_sist.styles.border_id(_BORDER_THIN)
+        border_class_sist = patcher_sist.styles.border_id(_BORDER_CLASS_SEPARATOR)
 
         # Recopilar todos los estudiantes ordenados por fila original
         all_matches: List[Tuple[StudentMatch, ClaseGroup]] = []
@@ -1185,19 +1213,19 @@ def apply_direct_cierre(
 
             # 1. Estandarizar nombres y apellidos a MAYÚSCULAS
             if col_nombres:
-                cell_nom = ws_sist.cell(r_idx, col_nombres)
-                if isinstance(cell_nom.value, str) and cell_nom.value:
-                    val_upper = cell_nom.value.strip().upper()
-                    if cell_nom.value != val_upper:
-                        cell_nom.value = val_upper
+                val_nom = ws_sist.cell(r_idx, col_nombres).value
+                if isinstance(val_nom, str) and val_nom:
+                    val_upper = val_nom.strip().upper()
+                    if val_nom != val_upper:
+                        sheet_sist.set_cell(r_idx, col_nombres, val_upper, has_value=True)
                         report.sistematizacion_names_uppercased += 1
 
             if col_apellidos:
-                cell_ape = ws_sist.cell(r_idx, col_apellidos)
-                if isinstance(cell_ape.value, str) and cell_ape.value:
-                    val_upper = cell_ape.value.strip().upper()
-                    if cell_ape.value != val_upper:
-                        cell_ape.value = val_upper
+                val_ape = ws_sist.cell(r_idx, col_apellidos).value
+                if isinstance(val_ape, str) and val_ape:
+                    val_upper = val_ape.strip().upper()
+                    if val_ape != val_upper:
+                        sheet_sist.set_cell(r_idx, col_apellidos, val_upper, has_value=True)
                         report.sistematizacion_names_uppercased += 1
 
             # 2. Celdas de cierre: solo si están estrictamente VACÍAS
@@ -1226,10 +1254,9 @@ def apply_direct_cierre(
             for c_idx, val_to_write in target_values.items():
                 if val_to_write is None:
                     continue
-                cell = ws_sist.cell(r_idx, c_idx)
-                cur_val = cell.value
+                cur_val = ws_sist.cell(r_idx, c_idx).value
                 if cur_val is None or str(cur_val).strip() == "":
-                    cell.value = val_to_write
+                    sheet_sist.set_cell(r_idx, c_idx, val_to_write, has_value=True)
                     report.sistematizacion_updated_cells += 1
                 else:
                     # Celda con datos preexistentes: NO TOCAR
@@ -1249,16 +1276,19 @@ def apply_direct_cierre(
                 if current_clase != next_clase:
                     is_last_of_class = True
 
-            row_border = _BORDER_CLASS_SEPARATOR if is_last_of_class else _BORDER_THIN
-            for c in range(1, max_col_sist + 1):
-                ws_sist.cell(r_idx, c).border = row_border
+            row_border = border_class_sist if is_last_of_class else border_thin_sist
+            sheet_sist.set_row_border(
+                r_idx, 1, max_col_sist, row_border, patcher_sist.styles
+            )
 
-        wb_sist.save(path_sist)
         wb_sist.close()
-        # Preservar las extensiones de hoja (listas de validación x14, formato
-        # condicional moderno, etc.) que openpyxl descarta al guardar.
-        _preserve_sheet_blocks_and_report(
-            report, "Sistematización", path_sist, backup_by_role.get("sistematizacion", path_sist)
+        patcher_sist.save()
+        _verify_preservation_and_report(
+            report,
+            "Sistematización",
+            path_sist,
+            backup_by_role.get("sistematizacion", path_sist),
+            {sheet_name_sist},
         )
     except Exception as e:
         report.errors.append(f"Error al actualizar Sistematización: {e}")
@@ -1267,11 +1297,9 @@ def apply_direct_cierre(
     # PASO 3: ANEXAR EN CERTIFICADOS
     # ---------------------------------------------------------
     try:
+        # Igual que en Sistematización: openpyxl solo LEE. La escritura quirúrgica
+        # la hace XlsxPatcher (conserva tablas dinámicas, gráficos, controles…).
         wb_cert = openpyxl.load_workbook(path_cert, data_only=False)
-        # Sanear fórmulas externas, tablas dinámicas y referencias externas.
-        _resolve_external_link_formulas(wb_cert, path_cert)
-        _strip_pivot_tables(wb_cert)
-        _strip_external_links(wb_cert)
         if "Códigos" in wb_cert.sheetnames:
             ws_cert = wb_cert["Códigos"]
         elif "Certificados" in wb_cert.sheetnames:
@@ -1280,6 +1308,14 @@ def apply_direct_cierre(
             ws_cert = wb_cert["CERTIFICADOS"]
         else:
             ws_cert = wb_cert.active
+        sheet_name_cert = ws_cert.title
+        patcher_cert = XlsxPatcher(path_cert)
+        sheet_cert = patcher_cert.sheet(sheet_name_cert)
+        font_cert_id = patcher_cert.styles.font_id(
+            _FONT_CERTIFICADO_NAME, _FONT_CERTIFICADO_SIZE
+        )
+        border_thin_cert = patcher_cert.styles.border_id(_BORDER_THIN)
+        border_class_cert = patcher_cert.styles.border_id(_BORDER_CLASS_SEPARATOR)
 
         # Encontrar la última fila ocupada con datos reales en columna 1 o 2
         last_row = 1
@@ -1368,29 +1404,34 @@ def apply_direct_cierre(
                 if current_clase != next_clase:
                     is_last_of_class = True
 
-            border_cell = _BORDER_CLASS_SEPARATOR if is_last_of_class else _BORDER_THIN
+            border_cell = border_class_cert if is_last_of_class else border_thin_cert
 
             for c_idx, val in enumerate(row_cert, start=1):
-                cell = ws_cert.cell(curr_cert_r, c_idx, val)
-                cell.font = _FONT_CERTIFICADO
                 # La columna N° (1) es la única que NO lleva borde inferior grueso
                 # en la fila de fin de clase; el resto sí.
-                if is_last_of_class and c_idx == 1:
-                    cell.border = _BORDER_THIN
-                else:
-                    cell.border = border_cell
-                # Toda la información de la tabla de Certificados va centrada.
-                cell.alignment = Alignment(horizontal="center", vertical="center")
+                cell_border = border_thin_cert if (is_last_of_class and c_idx == 1) else border_cell
+                style_id = patcher_cert.styles.xf_id(
+                    base=0,
+                    border=cell_border,
+                    font=font_cert_id,
+                    alignment=_ALIGN_CENTER_CERT,
+                )
+                sheet_cert.set_cell(
+                    curr_cert_r, c_idx, val, has_value=True, style=style_id
+                )
 
             current_n += 1
             curr_cert_r += 1
             report.certificados_rows_appended += 1
 
-        wb_cert.save(path_cert)
         wb_cert.close()
-        # Preservar las extensiones de hoja que openpyxl descarta al guardar.
-        _preserve_sheet_blocks_and_report(
-            report, "Certificados", path_cert, backup_by_role.get("certificados", path_cert)
+        patcher_cert.save()
+        _verify_preservation_and_report(
+            report,
+            "Certificados",
+            path_cert,
+            backup_by_role.get("certificados", path_cert),
+            {sheet_name_cert},
         )
     except Exception as e:
         report.errors.append(f"Error al anexar en Certificados: {e}")
@@ -1399,11 +1440,9 @@ def apply_direct_cierre(
     # PASO 4: ACTUALIZAR EN CONTROL DE AULAS
     # ---------------------------------------------------------
     try:
+        # openpyxl solo LEE; la escritura quirúrgica la hace XlsxPatcher.
         wb_ctrl = openpyxl.load_workbook(path_ctrl, data_only=False)
-        # Sanear fórmulas externas, tablas dinámicas y referencias externas.
-        _resolve_external_link_formulas(wb_ctrl, path_ctrl)
-        _strip_pivot_tables(wb_ctrl)
-        _strip_external_links(wb_ctrl)
+        patcher_ctrl = XlsxPatcher(path_ctrl)
         fecha_cierre_hoy = datetime.now().strftime("%d/%m/%Y")
 
         sheets_to_check = [
@@ -1412,6 +1451,7 @@ def apply_direct_cierre(
         ]
 
         clases_pendientes = {str(cg.clase_id).strip() for cg in result.clases}
+        modified_control_sheets: set = set()
 
         for sheet_name in sheets_to_check:
             ws = wb_ctrl[sheet_name]
@@ -1431,6 +1471,8 @@ def apply_direct_cierre(
             if not col_clase or not col_certificados:
                 continue
 
+            sheet_ctrl = patcher_ctrl.sheet(sheet_name)
+
             for r in range(2, max_row + 1):
                 c_val = ws.cell(r, col_clase).value
                 if c_val is None:
@@ -1438,17 +1480,23 @@ def apply_direct_cierre(
                 c_str = str(int(c_val)) if isinstance(c_val, float) and c_val.is_integer() else str(c_val).strip()
 
                 if c_str in clases_pendientes:
-                    cell_cert = ws.cell(r, col_certificados)
-                    if cell_cert.value is None or str(cell_cert.value).strip() == "":
-                        cell_cert.value = fecha_cierre_hoy
+                    cur_val = ws.cell(r, col_certificados).value
+                    if cur_val is None or str(cur_val).strip() == "":
+                        sheet_ctrl.set_cell(
+                            r, col_certificados, fecha_cierre_hoy, has_value=True
+                        )
                         report.control_aulas_classes_marked += 1
+                        modified_control_sheets.add(sheet_name)
                     clases_pendientes.discard(c_str)
 
-        wb_ctrl.save(path_ctrl)
         wb_ctrl.close()
-        # Preservar las extensiones de hoja que openpyxl descarta al guardar.
-        _preserve_sheet_blocks_and_report(
-            report, "Control de Aulas", path_ctrl, backup_by_role.get("control_aulas", path_ctrl)
+        patcher_ctrl.save()
+        _verify_preservation_and_report(
+            report,
+            "Control de Aulas",
+            path_ctrl,
+            backup_by_role.get("control_aulas", path_ctrl),
+            modified_control_sheets,
         )
     except Exception as e:
         report.errors.append(f"Error al actualizar Control de Aulas: {e}")

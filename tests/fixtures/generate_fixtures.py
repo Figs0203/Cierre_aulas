@@ -16,13 +16,63 @@ IMPORTANTE:
 
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
+import os
+import re
+import zipfile
+
 import openpyxl
 from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
 
 FIXTURES_DIR = Path(__file__).resolve().parent
+
+# Fecha fija de los metadatos (`docProps/core.xml`) y de los miembros del ZIP: con
+# una fecha variable, cada ejecución de los tests regeneraba los fixtures y
+# ensuciaba el repositorio aunque el contenido fuera idéntico.
+_FIXTURE_TIMESTAMP = datetime(2026, 10, 20, 16, 8, 13)
+
+
+def _normalize_zip_timestamps(path: Path) -> None:
+    """Reescribe el `.xlsx` con fechas fijas (metadatos y miembros del ZIP).
+
+    `openpyxl` sobrescribe `dcterms:modified` con la hora actual al guardar, así que
+    se normaliza aquí, junto con la fecha de cada miembro del paquete.
+    """
+    fecha = _FIXTURE_TIMESTAMP.timetuple()[:6]
+    iso = _FIXTURE_TIMESTAMP.strftime("%Y-%m-%dT%H:%M:%SZ")
+    with zipfile.ZipFile(path) as zf:
+        miembros = [(info.filename, zf.read(info.filename)) for info in zf.infolist()]
+    tmp_path = path.with_name(path.name + ".tmp")
+    try:
+        with zipfile.ZipFile(tmp_path, "w", zipfile.ZIP_DEFLATED) as zf_out:
+            for nombre, datos in miembros:
+                if nombre == "docProps/core.xml":
+                    datos = re.sub(
+                        rb"(<dcterms:modified\b[^>]*>)[^<]*(</dcterms:modified>)",
+                        rb"\g<1>" + iso.encode() + rb"\g<2>",
+                        datos,
+                    )
+                info = zipfile.ZipInfo(nombre, date_time=fecha)
+                info.compress_type = zipfile.ZIP_DEFLATED
+                zf_out.writestr(info, datos)
+        os.replace(tmp_path, path)
+    finally:
+        if tmp_path.exists():
+            try:
+                tmp_path.unlink()
+            except OSError:
+                pass
+
+
+def _save(wb: openpyxl.Workbook, path: Path) -> None:
+    """Guarda el libro con metadatos deterministas para que el fixture sea estable."""
+    wb.properties.created = _FIXTURE_TIMESTAMP
+    wb.properties.modified = _FIXTURE_TIMESTAMP
+    wb.save(path)
+    _normalize_zip_timestamps(path)
 
 
 def create_synthetic_control_aulas(path: Path) -> None:
@@ -75,7 +125,7 @@ def create_synthetic_control_aulas(path: Path) -> None:
             ws.cell(row=2, column=12).fill = green_fill
             ws.cell(row=2, column=13).fill = green_fill
 
-    wb.save(path)
+    _save(wb, path)
 
 
 def create_synthetic_sistematizacion(path: Path) -> None:
@@ -110,7 +160,7 @@ def create_synthetic_sistematizacion(path: Path) -> None:
         row = list(s) + [None, None, None, None, None, f'=IF(R{idx}>=3.0, "Aprobado", "No aprobado")', None, None, None, None]
         ws.append(row)
 
-    wb.save(path)
+    _save(wb, path)
 
 
 def create_synthetic_notas(path: Path) -> None:
@@ -146,7 +196,7 @@ def create_synthetic_notas(path: Path) -> None:
             for c in range(1, 11):
                 ws.cell(row=r_idx, column=c).fill = orange_fill
 
-    wb.save(path)
+    _save(wb, path)
 
 
 def create_synthetic_certificados(path: Path) -> None:
@@ -170,7 +220,7 @@ def create_synthetic_certificados(path: Path) -> None:
     for r in prev_rows:
         ws.append(r)
 
-    wb.save(path)
+    _save(wb, path)
 
 
 def generate_all_fixtures(output_dir: Path | None = None) -> dict[str, Path]:

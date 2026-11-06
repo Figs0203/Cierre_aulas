@@ -326,6 +326,8 @@ def handle_direct_cierre_mode():
     print("  • Los nombres y apellidos de los estudiantes se estandarizarán a MAYÚSCULAS.")
     print("  • Solo se escribirán notas y estados en celdas que estén estrictamente vacías.")
     print("  • El archivo de notas permanecerá 100% como solo lectura.")
+    print("  • NO se perderá ninguna función de Excel: listas de validación, formato")
+    print("    condicional, controles, tablas dinámicas, gráficos, imágenes ni fórmulas.")
     print("!" * 76)
 
     try:
@@ -363,12 +365,14 @@ def handle_direct_cierre_mode():
         print(f"   • Sistematización — Celdas preexistentes protegidas (intactas): {report.sistematizacion_untouched_cells}")
         print(f"   • Certificados — Filas de aprobados anexadas al final: {report.certificados_rows_appended}")
         print(f"   • Control de Aulas — Clases marcadas con fecha de cierre: {report.control_aulas_classes_marked}")
-        print("\n🔽 Listas de validación de datos (listas desplegables) — verificación:")
+        print("\n🔒 Integridad del libro original — verificación parte por parte:")
+        print("   (listas de validación, formato condicional, controles de formulario,")
+        print("    tablas dinámicas, gráficos, imágenes y nombres definidos)")
         if report.validaciones_preservadas:
             for resumen in report.validaciones_preservadas.values():
                 print(f"   • {resumen}")
         else:
-            print("   • (Los archivos oficiales no contenían listas de validación que preservar.)")
+            print("   • (No se pudo verificar la preservación de los archivos oficiales.)")
         print("\n✅ Todos los archivos oficiales han sido actualizados de forma segura.")
     else:
         print("🔴 SE COMPLETÓ CON ADVERTENCIAS O ERRORES:")
@@ -378,7 +382,7 @@ def handle_direct_cierre_mode():
         print("\n⚠️ ADVERTENCIAS (requieren revisión):")
         for adv in report.warnings:
             print(f"   • {adv}")
-        print("   ↳ Si alguna lista de validación no se pudo preservar, restaure el último")
+        print("   ↳ Si la verificación reporta alguna pérdida, restaure el último")
         print("     respaldo con la opción [6] y reporte el caso.")
     print("=" * 76)
 

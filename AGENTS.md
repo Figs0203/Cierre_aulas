@@ -18,9 +18,11 @@ y los tests las protegen:
    de escritura y exige confirmación `"SI"` + backup automático.
 3. **Auditoría SHA-256**: hash antes y después de cada operación
    (`security/integrity.py`, `tests/unit/test_immutability.py`).
-4. **Escritura segura**: solo se escriben celdas estrictamente vacías; nombres
-   a MAYÚSCULAS; ninguna celda preexistente con datos se altera. Notas es
-   siempre solo lectura.
+4. **Escritura segura y quirúrgica**: solo se escriben celdas estrictamente
+   vacías (y los nombres a MAYÚSCULAS); ninguna celda preexistente con datos se
+   altera y **ninguna otra parte del libro se reserializa**: el resto del paquete
+   `.xlsx` se conserva byte a byte (`output/xlsx_patcher.py`). Notas es siempre
+   solo lectura.
 5. **Matching ultra-conservador**: prohibido asignar notas por coincidencia
    difusa de nombres. Se exige doble factor de identidad
    (Documento + Nombre/Correo) — `matching/engine.py`.
@@ -83,7 +85,9 @@ El menú de `main.py` (fuente de verdad; el README puede estar desactualizado):
 - `processing/` — `cierre_orchestrator.py` (`run_cierre_pipeline`),
   `rules_engine.py` (`apply_rules_to_match`, `evaluate_certification_status`).
 - `output/` — `direct_updater.py` (`apply_direct_cierre`, `restore_last_backup`,
-  `create_timestamped_backup`), `excel_generator.py` (`generate_cierre_excel`,
+  `create_timestamped_backup`), `xlsx_patcher.py` (`XlsxPatcher`: edición
+  quirúrgica de celdas + `verify_preservation`: verificación de pérdida cero),
+  `excel_generator.py` (`generate_cierre_excel`,
   5 hojas: RESUMEN, SISTEMATIZACION, CERTIFICADOS, ACTUALIZACION_CONTROL,
   VALIDACIONES_Y_TRAZABILIDAD).
 - `security/` — `integrity.py`, `offline_check.py`, `privacy.py`,
@@ -100,7 +104,9 @@ El menú de `main.py` (fuente de verdad; el README puede estar desactualizado):
 - Estados oficiales de certificación: `Aprobó`, `No aprobó`, `Abandonó`,
   `No aplica`.
 - Los fixtures de pruebas son **sintéticos**; jamás committear archivos
-  `.xlsx` reales (están en `.gitignore`, salvo `tests/fixtures/*.xlsx`).
+  `.xlsx` reales (están en `.gitignore`, salvo `tests/fixtures/*.xlsx`). Se
+  regeneran con fecha fija (`_FIXTURE_TIMESTAMP`) para que el contenido sea
+  idéntico en cada ejecución y no ensucie el repositorio.
 - Reportes generados en `reports/` y `discovery_*.txt` son locales y están
   gitignored.
 - Al modificar código, regenerar el grafo de conocimiento: `graphify update .`
@@ -128,12 +134,12 @@ oficiales de la biblioteca. Ajustes recientes (formato oficial):
   p. ej. `28-sep-2026` (no se aplica `.upper()`).
 - Certificados: **toda la información centrada** y la columna **N° (col 1) es la
   única sin borde inferior grueso** en la fila de fin de clase.
-- Saneo al guardar oficiales: además de PivotTables, se eliminan las
-  **referencias externas** y se **sustituyen las fórmulas con referencias a
-  libros externos** (`[N]Libro!`) por su valor en caché antes de eliminarlas,
-  con `_resolve_external_link_formulas` + `_strip_external_links` (también
-  elimina nombres definidos que apuntan a libros externos). Esto evita el aviso
-  de "reparación" de Excel ("Registros quitados: Fórmula de sheetN.xml").
+- Saneo al guardar oficiales: **ya no aplica**. El cierre no reserializa el libro
+  (ver "Preservación TOTAL del libro original"), así que no se eliminan tablas
+  dinámicas, referencias externas ni se sustituyen fórmulas. Por eso tampoco
+  aparece el aviso de "reparación" de Excel ("Registros quitados: Fórmula de
+  sheetN.xml"). `_resolve_external_link_formulas`, `_strip_external_links` y
+  `_strip_pivot_tables` quedan como utilidades de legado.
 - Fix de claves del mapa de columnas en `apply_direct_cierre`: el parser usa
   `estado`, `elaboro`, `codigo_cert`, `envio` (antes se buscaban
   `estado_certificacion`, etc.), por lo que las columnas *Estado para
@@ -150,33 +156,50 @@ oficiales de la biblioteca. Ajustes recientes (formato oficial):
   (`promedio_curso`) además de `Calculated Final`/`Nota Final`
   (`normalization/headers.py`).
 
-- **Preservación de listas de validación de datos y fórmulas**: openpyxl puede
-  descartar al guardar tanto el bloque `<dataValidations>` (listas estándar) como
-  las extensiones de hoja (`extLst`, p. ej. `x14:dataValidations`) y algunos
-  `definedNames` que son el origen de las listas. Tras guardar,
-  `preserve_sheet_data_blocks` (`output/direct_updater.py`) reescribe **el bloque
-  del respaldo tal cual** (fuente de verdad: openpyxl sólo refleja lo que leyó,
-  nunca añade listas) y: (a) reemplaza cualquier bloque que haya escrito openpyxl
-  —**no se combinan por texto**, porque openpyxl reescribe cada `<dataValidation>`
-  (`showDropDown="0"`, reordena atributos, re-codifica entidades) y fusionarlas
-  duplicaba las listas: 3→6 y 7→14—; (b) respeta el orden del esquema OOXML
-  (`dataValidations` después de `conditionalFormatting` y antes de
-  `pageMargins`/`extLst`; `extLst` al final); (c) admite las formas autocerradas
-  `<dataValidations/>` y `<extLst/>`; (d) copia a la raíz del worksheet las
-  declaraciones `xmlns:` del original **y las de `xl/workbook.xml`** (prefijos
-  como `x14`, `xm`, `xr`), con tabla de URIs conocidas de Excel como red de
-  seguridad; (e) reincorpora los `definedNames` que falten (nunca los que apuntan
-  a libros externos); (f) valida el XML resultante con ElementTree y, si es
-  inválido, conserva la versión de openpyxl; y (g) **verifica huella por huella**
-  (tipo + `sqref` + fórmulas) que ninguna lista del original se haya perdido, y
-  reporta cualquier problema. El Modo 5 imprime el resultado de esa verificación
-  (`report.validaciones_preservadas`) y las advertencias (`report.warnings`).
+- **Preservación TOTAL del libro original (arquitectura definitiva)**: el cierre
+  directo **ya no guarda el libro con openpyxl**. `openpyxl` no es un editor
+  *round-trip* fiel y al guardar descarta lo que no sabe representar: listas de
+  validación modernas (`x14:dataValidations`), `extLst` de hoja y de libro
+  (formato condicional moderno, minigráficos, segmentaciones, líneas de tiempo),
+  controles de formulario (`vmlDrawing`), tablas dinámicas, parte de los estilos
+  `dxf`, gráficos con extensiones, vínculos externos y `definedNames` externos.
+
+  Ahora `output/xlsx_patcher.py` (`XlsxPatcher`) edita el `.xlsx` como lo que es,
+  un ZIP de partes XML: localiza la hoja y **reemplaza únicamente las celdas
+  afectadas** (`<c>` dentro de `<row>` dentro de `<sheetData>`); todo el resto del
+  paquete se copia **byte a byte**. Solo se tocan, y solo si hace falta:
+  `xl/worksheets/sheetN.xml` (celdas), `xl/styles.xml` (se **añaden** fuentes,
+  bordes y `xf`; nada se reescribe) y `xl/workbook.xml` (se marca
+  `fullCalcOnLoad="1"` para que Excel recalcule las fórmulas dependientes).
+
+  Ya **no** se eliminan tablas dinámicas, referencias externas ni se sustituyen
+  fórmulas: todo eso ahora sobrevive intacto, y por tanto tampoco aparece el aviso
+  de "reparación" de Excel. Las funciones `_strip_pivot_tables`,
+  `_strip_external_links`, `_resolve_external_link_formulas` y
+  `preserve_sheet_data_blocks` siguen disponibles como utilidades de **legado**
+  (y siguen cubiertas por tests), pero el Modo 5 no las usa.
+
+- **Verificación de pérdida cero**: tras cada archivo, `verify_preservation`
+  (`output/xlsx_patcher.py`) compara el respaldo y el resultado y falla si (a)
+  desaparece cualquier parte del paquete, (b) cambia una parte no prevista, (c)
+  falta alguna lista de validación (huella por huella, estándar y `x14`), regla de
+  formato condicional o nombre definido, o (d) se pierden tablas dinámicas,
+  gráficos, imágenes o controles de formulario. El resultado se imprime en el
+  Modo 5 (`report.validaciones_preservadas`) y cualquier problema se añade a
+  `report.warnings`.
 
   > **Fix crítico (reporte real CMI121, 2026-10-23):** el detector de prefijos
   > (`_prefixes_used`) confundía rangos de celdas de un `sqref` multirrango
   > (`"B2:B9 AD2:AF2"`) con prefijos de namespace, descartaba el `extLst` completo
   > y se perdían las 8 listas modernas (x14). Ahora un atributo con prefijo debe
   > llevar `=` tras el nombre local, y los prefijos implícitos (`xml`) se ignoran.
+
+- **Edición quirúrgica de celdas (`XlsxPatcher`)**: escribe cadenas como
+  `t="inlineStr"` para **no tocar `xl/sharedStrings.xml`**; clona el `xf` de la
+  celda para conservar fuente, relleno, alineación y formato numérico, y solo
+  cambia el borde; hereda el estilo de la columna (`<col style>`) cuando la celda
+  no existía; amplía `<dimension>` si añade filas; y no reescribe el archivo si no
+  hubo cambios. Escapa `&`, `<`, `>` y usa `xml:space="preserve"`.
 
 - **Fecha de envío en Sistematización**: la columna *Fecha de envío* se escribe
   como fecha oficial `DD-mes-AAAA` con mes abreviado en minúsculas (ej.
@@ -185,8 +208,10 @@ oficiales de la biblioteca. Ajustes recientes (formato oficial):
   En el archivo auxiliar (Modo 3) esa columna se excluye del `upper()` aplicado
   al resto de la fila — `output/excel_generator.py`.
 - El modo **7 (Diagnóstico)** incluye una **simulación completa del Modo 5**
-  sobre copias (parsers, matcheo, saneo y escritura) que valida el XML de cada
-  hoja resultante con expat y reporta el error exacto si lo hubiera.
+  sobre copias (parsers, matcheo, edición quirúrgica y escritura) que valida el
+  XML de cada hoja resultante con expat, confirma que las listas de validación
+  sobreviven y verifica parte por parte (`verify_preservation`) que no se pierda
+  nada del libro original; reporta el error exacto si lo hubiera.
 
 - **Selección automática de hoja en Notas**: si el archivo tiene varias hojas,
   se elige la que tenga columnas de módulos/nota final + identidad (p. ej.
@@ -203,8 +228,8 @@ oficiales de la biblioteca. Ajustes recientes (formato oficial):
 
 > Nota: el color de borde de las tablas escritas se fijó en negro para que sea
 > visible y consistente. Si el documento oficial usa otro color, se cambia en la
-> constante `_BORDER_COLOR` de `output/direct_updater.py` y
+> constante `_BORDER_COLOR` (ARGB, `FF000000`) de `output/direct_updater.py` y en
 > `output/excel_generator.py`.
 
-Última verificación: **104 tests OK** (`python -m pytest tests -q`). El grafo de
+Última verificación: **112 tests OK** (`python -m pytest tests -q`). El grafo de
 conocimiento se regenera con `graphify update .` tras cada cambio de código.
