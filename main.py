@@ -168,6 +168,52 @@ def print_match_diagnostics(res: AulaCierreResult):
     print("!" * 76)
 
 
+def print_notas_detection(res):
+    """Muestra qué columnas de Notas se usaron y si se infirieron por posición."""
+    info = getattr(res, "notas_deteccion", None) or {}
+    if not info:
+        return
+    print("\n🧭 Detección de columnas en el archivo de Notas:")
+    print(f"   • Hoja usada: {info.get('hoja') or '(desconocida)'}")
+    metodo = info.get("metodo_modulos", "encabezados")
+    if metodo == "posicional":
+        print("   • Módulos: inferidos POR POSICIÓN (no se reconocieron los encabezados)")
+    elif metodo == "mixto":
+        print("   • Módulos: encabezados reconocidos + faltantes inferidos POR POSICIÓN")
+    else:
+        print("   • Módulos: detectados por encabezados")
+
+    modulos = info.get("modulos") or {}
+    if modulos:
+        for num in sorted(modulos, key=lambda x: int(x)):
+            dato = modulos[num]
+            if not dato:
+                continue
+            encabezado = dato.get("encabezado") or "(sin título)"
+            print(
+                f"     - Módulo {num}: {dato.get('letra')} "
+                f"({dato.get('columna')}) — '{encabezado}'"
+            )
+    else:
+        print("     - (No se detectaron módulos)")
+
+    if info.get("metodo_nota_final") == "posicional":
+        print("   • Nota final: inferida POR POSICIÓN (no se reconoció el encabezado)")
+
+    final = info.get("nota_final")
+    if final:
+        encabezado = final.get("encabezado") or "(sin título)"
+        print(
+            f"   • Nota final: {final.get('letra')} ({final.get('columna')}) "
+            f"— '{encabezado}'"
+        )
+    else:
+        print("   • Nota final: (no se detectó)")
+
+    for aviso in info.get("avisos") or []:
+        print(f"   ↳ ⚠️ {aviso}")
+
+
 def handle_cierre_execution(is_simulation: bool = False):
     modo_nombre = "MODO 2: SIMULACIÓN PREVIA" if is_simulation else "MODO 3: GENERACIÓN DE ARCHIVO AUXILIAR DE CIERRE"
     print("\n" + "=" * 76)
@@ -230,6 +276,7 @@ def handle_cierre_execution(is_simulation: bool = False):
 
     print_identity_verification_summary(res)
     print_match_diagnostics(res)
+    print_notas_detection(res)
 
     print("\n🔒 Verificación de Integridad de los Archivos Oficiales:")
     for m in integrity_msgs:
@@ -344,6 +391,7 @@ def handle_direct_cierre_mode():
 
     print_identity_verification_summary(res)
     print_match_diagnostics(res)
+    print_notas_detection(res)
 
     print("\n" + "!" * 76)
     print("🛡️ GARANTÍAS DE SEGURIDAD Y RESPONSABILIDAD:")
@@ -785,6 +833,8 @@ def handle_batch_cierre_mode():
             f"{res.total_matched} con notas, {res.total_excluded} excluidos, "
             f"{item['aprobados']} aprobados"
         )
+        if (getattr(res, "notas_deteccion", {}) or {}).get("metodo_modulos") == "posicional":
+            print_notas_detection(res)
     print(f"\n👉 Se anexarán {total_certificados} certificados en total.")
     print("   (La numeración se calcula al aplicar cada aula, sobre el archivo real.)")
 

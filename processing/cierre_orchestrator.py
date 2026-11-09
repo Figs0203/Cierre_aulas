@@ -108,8 +108,11 @@ def run_cierre_pipeline(
 
     clases_detectadas = list(estudiantes_sist_por_clase.keys())
 
-    # 3. Parsear Notas
-    estudiantes_notas, secciones_map = parse_notas_archivo(file_paths["notas"])
+    # 3. Parsear Notas (con diagnóstico de las columnas detectadas/inferidas)
+    notas_deteccion: Dict[str, Any] = {}
+    estudiantes_notas, secciones_map = parse_notas_archivo(
+        file_paths["notas"], diagnostics=notas_deteccion
+    )
 
     # 4. Parsear Control de Aulas
     metadatos_control = parse_control_aulas(
@@ -195,6 +198,7 @@ def run_cierre_pipeline(
         hashes_before={k: v.sha256_hash for k, v in hashes_before.items()},
         metadatos_control=metadatos_control,
         start_consecutivo=start_consecutivo,
+        notas_deteccion=notas_deteccion,
     )
 
     # 9. Generar Excel Auxiliar si no es simulación

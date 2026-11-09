@@ -61,6 +61,55 @@ class TestCierrePipelineIntegration(unittest.TestCase):
         # Total con notas válidas = 5
         self.assertEqual(result.total_matched, 5)
 
+        # 4. Se reporta qué columnas de Notas se usaron (auditoría del mapeo)
+        self.assertTrue(result.notas_deteccion)
+        self.assertIn(
+            result.notas_deteccion.get("metodo_modulos"),
+            ("encabezados", "posicional", "no_detectado"),
+        )
+        self.assertIsNotNone(result.notas_deteccion.get("nota_final"))
+
+    def test_respaldo_posicional_de_notas_en_el_pipeline(self):
+        """Con encabezados de Notas atípicos, el cierre sigue leyendo módulos y final."""
+        import shutil
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            files = {k: tmp / Path(v).name for k, v in self.fixtures.items()}
+            for k, v in self.fixtures.items():
+                shutil.copy2(v, files[k])
+
+            # Títulos que NO se reconocen como módulos ni nota final.
+            wb = openpyxl.load_workbook(files["notas"])
+            ws = wb.active
+            for c, titulo in zip(
+                range(6, 11),
+                ["Puntaje A", "Puntaje B", "Puntaje C", "Puntaje D", "Total"],
+            ):
+                ws.cell(1, c).value = titulo
+            wb.save(files["notas"])
+            wb.close()
+
+            result, _, _, _ = run_cierre_pipeline(
+                file_paths=files,
+                target_aula="ABBUEI154",
+                codigo_curso="ABBUEI154",
+                is_simulation=True,
+            )
+
+            self.assertEqual(
+                result.notas_deteccion.get("metodo_modulos"), "posicional"
+            )
+            self.assertEqual(result.notas_deteccion["nota_final"]["columna"], 10)
+            match = next(
+                m for cg in result.clases for m in cg.matches
+            )
+            self.assertEqual(
+                set(match.estudiante_nota.calificaciones_modulos),
+                {"modulo_1", "modulo_2", "modulo_3", "modulo_4"},
+            )
+            self.assertIsNotNone(match.estudiante_nota.nota_final)
+
     def test_pipeline_generation_mode_five_sheets(self):
         """Modo 3: Generación del libro Excel auxiliar de cierre con las 5 hojas estándar."""
         with tempfile.TemporaryDirectory() as tmpdir:

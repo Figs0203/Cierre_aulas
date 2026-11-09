@@ -16,15 +16,24 @@ Encabezados confirmados en Fase 0:
   Col  8 (H): Cuestionario módulo 3
   Col  9 (I): Cuestionario módulo 4
   Col 10 (J): Calculated Final
+
+Si los encabezados no permiten reconocer los módulos o la nota final, se usa el
+**respaldo posicional** `_infer_grade_columns`: de izquierda a derecha, módulo
+1..N y la última columna numérica es la nota final. Solo se activa cuando falta
+el mapeo por encabezado y valida cada columna con sus datos (sin identidad,
+fechas, porcentajes ni estados).
 """
 
 from __future__ import annotations
 
+import math
 import re
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import openpyxl
+from openpyxl.utils import get_column_letter
 
 from config.colors import (
     FILL_EXCLUDED_ORANGE,
@@ -37,7 +46,11 @@ from normalization.headers import (
     find_final_grade_column,
     find_module_columns,
 )
-from normalization.text import normalize_document, normalize_whitespace
+from normalization.text import (
+    normalize_document,
+    normalize_for_comparison,
+    normalize_whitespace,
+)
 
 
 def _parse_nota(raw: Any) -> Optional[float]:
@@ -148,6 +161,379 @@ def _count_identity_headers(headers: List[Optional[str]]) -> int:
     return count
 
 
+# ---------------------------------------------------------------------------
+# Respaldo POSICIONAL cuando los encabezados de Notas no se reconocen
+# ---------------------------------------------------------------------------
+# Regla indicada por la biblioteca: en los archivos de Interactiva las columnas
+# con notas van, de izquierda a derecha, del módulo 1 al módulo N y la última es
+# la nota final. Este respaldo SOLO se activa cuando la detección por encabezados
+# no encuentra módulos o nota final, y valida cada columna con sus DATOS para no
+# confundir identidad, fechas, porcentajes, estados ni códigos con notas.
+
+_GRADE_SYMBOLS = frozenset({
+    "aprobado", "aprobada", "aprobo", "aprobó",
+    "no aprobado", "no aprobada", "no aprobo", "no aprobó",
+    "reprobado", "reprobada", "reprobo", "reprobó",
+    "no aplica", "n/a", "na", "pendiente", "cancelado", "cancelada",
+    "exento", "exenta", "ganado", "ganada", "perdido", "perdida",
+    "satisfactorio", "no satisfactorio",
+})
+
+# Encabezados que NUNCA son una columna de notas en este respaldo.
+_FALLBACK_NON_GRADE_RE = re.compile(
+    r"\bfecha\b|\bhora\b|nombre|apellido|correo|email|documento|identificaci|"
+    r"orgdefinedid|org defined id|usuario|username|seccion|programa|catalogo|"
+    r"clase|aula|semestre|periodo|\bano\b|\bmes\b|porcentaje|peso|intento|"
+    r"estado|estatus|observaci|comentario|comentarios|codigo|cedula|telefono|"
+    r"celular|sede|jornada|grupo|credito|matricul|identificador|"
+    r"\baprob|\breprob|\bganad|\bperdid|\bcertific",
+    re.IGNORECASE,
+)
+
+_MAX_MODULOS_OFICIALES = 5
+
+
+def _header_is_non_grade(header: Optional[str]) -> bool:
+    """True si el encabezado describe una columna que no contiene notas."""
+    if not header or not str(header).strip():
+        return False
+    return bool(_FALLBACK_NON_GRADE_RE.search(normalize_for_comparison(str(header))))
+
+
+def _rightmost_cluster(columns: List[int], max_gap: int = 1) -> List[int]:
+    """Devuelve el grupo de columnas más a la derecha, tolerando huecos pequeños.
+
+    Ej.: [6, 7, 8, 12, 14] con ``max_gap=1`` empieza en 14, tolera el hueco de
+    la 13 y añade 12; el hueco hasta 8 es mayor, así que se detiene → [12, 14].
+    """
+    if not columns:
+        return []
+    grupo = [columns[-1]]
+    for c in reversed(columns[:-1]):
+        if grupo[0] - c - 1 <= max_gap:
+            grupo.insert(0, c)
+        else:
+            break
+    return grupo
+
+
+def _datos_columna_notas(
+    ws,
+    col: int,
+    filas: List[int],
+    valor_efectivo,
+) -> Dict[str, Any]:
+    """Resume si una columna parece contener notas, usando solo sus datos."""
+    no_vacias = numericos = fechas = booleanos = porcentajes = 0
+    valores_num: List[float] = []
+    valores_texto: List[str] = []
+    for r in filas:
+        celda = ws.cell(r, col)
+        v = valor_efectivo(celda, r, col)
+        if v is None or str(v).strip() == "":
+            continue
+        no_vacias += 1
+        if isinstance(v, bool):
+            booleanos += 1
+            continue
+        if isinstance(v, (date, datetime)):
+            fechas += 1
+            continue
+        if "%" in str(getattr(celda, "number_format", "") or ""):
+            porcentajes += 1
+        n = _parse_nota(v)
+        if n is not None:
+            numericos += 1
+            valores_num.append(n)
+        else:
+            valores_texto.append(str(v).strip())
+    return {
+        "no_vacias": no_vacias,
+        "numericos": numericos,
+        "fechas": fechas,
+        "booleanos": booleanos,
+        "porcentajes": porcentajes,
+        "valores_num": valores_num,
+        "valores_texto": valores_texto,
+    }
+
+
+def _cap_modulos(modulos: List[int], avisos: List[str]) -> List[int]:
+    """Limita los módulos a los 5 oficiales, informando de lo descartado."""
+    if len(modulos) <= _MAX_MODULOS_OFICIALES:
+        return modulos
+    avisos.append(
+        "Se encontraron más de 5 columnas con notas antes de la nota final; se "
+        "usarán las 5 primeras como módulos 1–5 y se ignorarán "
+        + ", ".join(get_column_letter(c) for c in modulos[_MAX_MODULOS_OFICIALES:])
+        + ". Verifique los encabezados del archivo de Notas."
+    )
+    return modulos[:_MAX_MODULOS_OFICIALES]
+
+
+def _infer_grade_columns(
+    ws,
+    headers: List[Optional[str]],
+    valor_efectivo,
+    max_col: int,
+    max_row: int,
+    identity_cols: set[int],
+    known_mod_cols: Dict[int, int],
+    known_final_col: Optional[int],
+) -> Tuple[Dict[int, int], Optional[int], List[str], Dict[str, Any]]:
+    """Infiere por posición las columnas de módulos y nota final.
+
+    Se usa **solo** cuando la detección por encabezados no encontró módulos o
+    nota final. Supone que, de izquierda a derecha, las columnas con notas son
+    módulo 1, módulo 2, …, módulo N y, la última, la nota final.
+
+    Para no confundir identidad, fechas, porcentajes, estados o códigos con
+    notas, cada columna candidata se valida con los **datos**: mayoría de valores
+    numéricos, sin booleanos, sin fechas, sin formato de porcentaje y con valores
+    en un rango plausible de nota. Las columnas de identidad y las ya detectadas
+    por encabezado quedan excluidas.
+
+    Returns:
+        ``(mod_map, final_col, avisos, info)``. ``mod_map`` es
+        ``{num_modulo: columna}``. Si había módulos detectados por encabezado,
+        devuelve el mapa completo (los reconocidos + los completados por
+        posición) para no reemplazarlos; el llamador decide si hubo cambios.
+    """
+    avisos: List[str] = []
+    info: Dict[str, Any] = {"filas_analizadas": 0}
+
+    # 1. Filas de estudiantes: al menos un dato de identidad no vacío.
+    filas: List[int] = []
+    for r in range(2, min(max_row, 1000) + 1):
+        if any(
+            ws.cell(r, c).value not in (None, "")
+            for c in identity_cols
+            if c and c <= max_col
+        ):
+            filas.append(r)
+    if not filas:
+        # Respaldo: filas con algo en las primeras 5 columnas.
+        for r in range(2, min(max_row, 1000) + 1):
+            if any(
+                ws.cell(r, c).value not in (None, "")
+                for c in range(1, min(max_col, 5) + 1)
+            ):
+                filas.append(r)
+    info["filas_analizadas"] = len(filas)
+    if not filas:
+        avisos.append(
+            "No se pudieron identificar filas de estudiantes para inferir las "
+            "columnas de notas."
+        )
+        return {}, None, avisos, info
+
+    total = len(filas)
+    minimo = max(1, math.ceil(total * 0.1))
+    excluidas = set(known_mod_cols.values()) if known_mod_cols else set()
+    if known_final_col:
+        excluidas.add(known_final_col)
+
+    numericas: List[int] = []
+    simbolicas: List[int] = []
+
+    for c in range(1, max_col + 1):
+        if c in identity_cols or c in excluidas:
+            continue
+        if _header_is_non_grade(headers[c - 1] if c - 1 < len(headers) else None):
+            continue
+
+        datos = _datos_columna_notas(ws, c, filas, valor_efectivo)
+        if datos["no_vacias"] < minimo:
+            continue
+
+        ratio_num = datos["numericos"] / max(datos["no_vacias"], 1)
+        rango_ok = False
+        if datos["valores_num"]:
+            ordenados = sorted(datos["valores_num"])
+            mediana = ordenados[len(ordenados) // 2]
+            # Descarta documentos/códigos: las notas no suelen pasar de 1000
+            # ni tener una mediana de cientos/miles.
+            rango_ok = max(datos["valores_num"]) <= 1000 and mediana <= 100
+
+        es_numerica = (
+            datos["booleanos"] == 0
+            and datos["fechas"] == 0
+            and datos["porcentajes"] == 0
+            and datos["numericos"] >= minimo
+            and ratio_num >= 0.6
+            and rango_ok
+        )
+        textos_ok = bool(datos["valores_texto"]) and all(
+            t.lower() in _GRADE_SYMBOLS for t in datos["valores_texto"]
+        )
+        es_simbolica = (
+            datos["numericos"] == 0
+            and textos_ok
+            and datos["no_vacias"] >= math.ceil(total * 0.5)
+        )
+        if es_numerica:
+            numericas.append(c)
+        elif es_simbolica:
+            simbolicas.append(c)
+
+    # 2. Si la nota final ya se detectó por encabezado, solo faltan los módulos.
+    if known_final_col and not known_mod_cols:
+        modulos = _rightmost_cluster(
+            [c for c in numericas if c < known_final_col], max_gap=1
+        )
+        modulos = _cap_modulos(modulos, avisos)
+        if modulos:
+            avisos.append(
+                "No se reconocieron los encabezados de los módulos; se infirieron "
+                "por posición antes de la nota final detectada: "
+                + ", ".join(
+                    f"{i}={get_column_letter(c)}" for i, c in enumerate(modulos, 1)
+                )
+                + "."
+            )
+        return {i: c for i, c in enumerate(modulos, 1)}, known_final_col, avisos, info
+
+    # 3. Si los módulos ya se detectaron por encabezado, se infiere la nota final
+    #    y, si la numeración es un prefijo 1..k, se completan por posición los
+    #    módulos que falten (sin reemplazar los ya reconocidos).
+    if known_mod_cols:
+        modulos = dict(known_mod_cols)
+        numeros = sorted(modulos)
+        prefijo = numeros == list(range(1, len(numeros) + 1))
+        ultimo_mod = max(modulos.values())
+        candidatas = [c for c in numericas if c > ultimo_mod]
+
+        final = known_final_col
+        if final:
+            candidatas = [c for c in candidatas if c < final]
+            grupo = _rightmost_cluster(candidatas, max_gap=1)
+        else:
+            grupo = _rightmost_cluster(candidatas, max_gap=1)
+            if grupo:
+                final = grupo[-1]
+                grupo = grupo[:-1]
+            else:
+                final = None
+
+        if prefijo and grupo:
+            completos = [modulos[i] for i in numeros] + grupo
+            completos = _cap_modulos(completos, avisos)
+            modulos = {i: c for i, c in enumerate(completos, 1)}
+            avisos.append(
+                "Se completaron módulos por posición después del último encabezado "
+                "reconocido: "
+                + ", ".join(f"{i}={get_column_letter(c)}" for i, c in modulos.items())
+                + "."
+            )
+        elif grupo:
+            avisos.append(
+                "Hay columnas numéricas no asignadas entre los módulos y la nota "
+                "final, pero la numeración de módulos detectada no es consecutiva "
+                "desde 1; no se infirieron. Revise los encabezados."
+            )
+
+        if not known_final_col and final:
+            avisos.append(
+                "No se reconoció el encabezado de la nota final; se tomó la última "
+                f"columna numérica después de los módulos: {get_column_letter(final)}."
+            )
+        elif not final:
+            avisos.append(
+                "Se reconocieron los módulos por encabezado, pero no se pudo "
+                "determinar la columna de la nota final."
+            )
+        return modulos, final, avisos, info
+
+    # 4. Sin encabezados reconocidos: módulos + nota final por posición.
+    if not numericas:
+        if simbolicas:
+            avisos.append(
+                "No se encontraron notas numéricas; no se asignó nota final para "
+                "no confundir una columna simbólica (p. ej. 'Aprobado'/'No aplica') "
+                "con un estado. Ajuste el encabezado de la nota final para que la "
+                "aplicación lo reconozca."
+            )
+        else:
+            avisos.append(
+                "No se encontraron columnas con notas numéricas para inferir los "
+                "módulos por posición."
+            )
+        return {}, None, avisos, info
+
+    grupo = _rightmost_cluster(numericas, max_gap=1)
+    final_col = grupo[-1]
+    modulos = list(grupo)
+    if final_col in modulos:
+        modulos = [c for c in modulos if c != final_col]
+
+    # Una columna simbólica después de las notas puede ser un estado o una nota
+    # final simbólica. Por seguridad NO se usa como nota final: se avisa para
+    # que el usuario revise el encabezado.
+    simbolicas_vecinas = [c for c in simbolicas if final_col < c <= final_col + 3]
+    if simbolicas_vecinas:
+        avisos.append(
+            "Se detectó una columna simbólica después de las notas ("
+            + ", ".join(get_column_letter(c) for c in simbolicas_vecinas)
+            + "); no se usó como nota final para no confundirla con un estado. "
+            "Si es la nota final, ajuste su encabezado para que la aplicación lo "
+            "reconozca."
+        )
+
+    modulos = _cap_modulos(modulos, avisos)
+    if not modulos:
+        avisos.append(
+            "Solo se encontró una columna con notas; se tomó como nota final y no "
+            "se asignaron módulos."
+        )
+    else:
+        avisos.append(
+            "No se reconocieron los encabezados de módulos/nota final; se "
+            "infirieron por posición. Verifique el mapeo mostrado: módulos "
+            + ", ".join(f"{i}={get_column_letter(c)}" for i, c in enumerate(modulos, 1))
+            + f"; nota final={get_column_letter(final_col)}."
+        )
+        avisos.append(
+            "La inferencia por posición supone que todos los módulos tienen notas. "
+            "Si algún módulo está completamente vacío, la numeración puede "
+            "desplazarse."
+        )
+
+    return {i: c for i, c in enumerate(modulos, start=1)}, final_col, avisos, info
+
+
+def _count_numeric_grade_columns(ws, limite: int = 60) -> int:
+    """Cuenta columnas con notas numéricas (para elegir la hoja correcta).
+
+    Se usa solo cuando la detección por encabezados no encontró módulos ni nota
+    final: permite reconocer una hoja con notas aunque sus títulos sean atípicos.
+    """
+    max_col = ws.max_column or 1
+    max_row = min(ws.max_row or 1, limite)
+    filas = list(range(2, max_row + 1))
+    if not filas:
+        return 0
+    total = len(filas)
+    minimo = max(1, min(3, total))
+    encontradas = 0
+    for c in range(1, max_col + 1):
+        if _header_is_non_grade(ws.cell(1, c).value):
+            continue
+        datos = _datos_columna_notas(
+            ws, c, filas, lambda celda, _fila, _col: celda.value
+        )
+        if (
+            datos["booleanos"] == 0
+            and datos["fechas"] == 0
+            and datos["porcentajes"] == 0
+            and datos["numericos"] >= minimo
+            and datos["numericos"] / max(datos["no_vacias"], 1) >= 0.6
+        ):
+            valores = datos["valores_num"]
+            if valores and max(valores) <= 1000 and sorted(valores)[len(valores) // 2] <= 100:
+                encontradas += 1
+    return encontradas
+
+
 def _select_notas_sheet(wb) -> str:
     """Elige la hoja de Notas más adecuada del libro.
 
@@ -177,6 +563,9 @@ def _select_notas_sheet(wb) -> str:
         max_col = ws.max_column or 1
         headers = [ws.cell(1, c).value for c in range(1, max_col + 1)]
         grade_cols = len(find_module_columns(headers)) + (1 if find_final_grade_column(headers) else 0)
+        if grade_cols == 0:
+            # Encabezados atípicos: la hoja aún puede tener notas numéricas.
+            grade_cols = _count_numeric_grade_columns(ws)
         ident_cols = _count_identity_headers(headers)
         if grade_cols >= 1 and ident_cols >= 1:
             prefer = 1 if name in ("Calificaciones", "Grades") else 0
@@ -255,12 +644,17 @@ def _elegir_columna_nota_final(
 def parse_notas_archivo(
     file_path: Path | str,
     sheet_name: Optional[str] = None,
+    diagnostics: Optional[Dict[str, Any]] = None,
 ) -> Tuple[List[EstudianteNotas], Dict[str, Dict[str, str]]]:
     """Extrae las notas de estudiantes desde el archivo de Interactiva.
 
     Args:
         file_path: Ruta al archivo Excel de Notas.
         sheet_name: Nombre de la hoja (si es None, usa 'Calificaciones' o la activa).
+        diagnostics: Diccionario opcional que se rellena con la detección de
+            columnas (hoja, método, módulos, nota final y avisos). Sirve para que
+            la aplicación muestre qué columnas se usaron y advierta cuando el
+            mapeo se infirió por posición.
 
     Returns:
         Tupla de:
@@ -309,13 +703,10 @@ def parse_notas_archivo(
         v = ws.cell(1, c).value
         raw_headers.append(str(v).strip() if v is not None else None)
 
-    # Mapeo semántico de columnas de módulos y final
-    mod_cols = find_module_columns(raw_headers)
-    final_col = _elegir_columna_nota_final(
-        ws, raw_headers, valor_efectivo=valor_efectivo
-    )
+    max_row = ws.max_row or 1
 
-    # Columnas de identificación básica
+    # 2. Columnas de identificación básica (se detectan ANTES del respaldo
+    #    posicional para poder excluirlas con certeza).
     col_org_id = 1
     col_username = 2
     col_last_name = 3
@@ -340,6 +731,85 @@ def parse_notas_archivo(
         elif "sección" in h_lower or "seccion" in h_lower:
             col_seccion = c_idx
 
+    # 3. Mapeo semántico de columnas de módulos y final (por encabezados).
+    mod_cols = find_module_columns(raw_headers)
+    final_col = _elegir_columna_nota_final(
+        ws, raw_headers, valor_efectivo=valor_efectivo
+    )
+    mod_por_encabezado = bool(mod_cols)
+    final_por_encabezado = bool(final_col)
+    metodo_modulos = "encabezados" if mod_por_encabezado else "no_detectado"
+    metodo_final = "encabezados" if final_por_encabezado else "no_detectada"
+    avisos_notas: List[str] = []
+    info_inferencia: Dict[str, Any] = {}
+
+    # 4. Respaldo POSICIONAL: solo si faltan módulos o nota final. Así los
+    #    archivos con títulos atípicos (p. ej. 'Puntaje A', 'Nota 1', columnas
+    #    sin título) siguen funcionando sin inventar columnas cuando los
+    #    encabezados sí se reconocen.
+    if not mod_cols or not final_col:
+        identity_cols = {
+            int(c)
+            for c in (col_org_id, col_username, col_last_name, col_first_name, col_seccion)
+            if c
+        }
+        inf_mods, inf_final, avisos, info_inferencia = _infer_grade_columns(
+            ws=ws,
+            headers=raw_headers,
+            valor_efectivo=valor_efectivo,
+            max_col=max_col,
+            max_row=max_row,
+            identity_cols=identity_cols,
+            known_mod_cols=mod_cols,
+            known_final_col=final_col,
+        )
+        if inf_mods:
+            if not mod_cols:
+                mod_cols = inf_mods
+                metodo_modulos = "posicional"
+            elif inf_mods != mod_cols:
+                mod_cols = inf_mods
+                metodo_modulos = "mixto"
+        if not final_col and inf_final:
+            final_col = inf_final
+            metodo_final = "posicional"
+        avisos_notas.extend(avisos)
+
+    if not final_col:
+        avisos_notas.append(
+            "No se pudo determinar la columna de la nota final en el archivo de Notas."
+        )
+    if not mod_cols:
+        avisos_notas.append(
+            "No se pudieron determinar las columnas de los módulos en el archivo de Notas."
+        )
+
+    # 5. Diagnóstico para la aplicación (qué columnas se usaron y por qué).
+    if diagnostics is not None:
+        def _col_info(col: Optional[int]) -> Optional[Dict[str, Any]]:
+            if not col:
+                return None
+            idx = int(col)
+            encabezado = raw_headers[idx - 1] if 0 < idx <= len(raw_headers) else None
+            return {
+                "columna": idx,
+                "letra": get_column_letter(idx),
+                "encabezado": encabezado or "",
+            }
+
+        diagnostics.clear()
+        diagnostics.update({
+            "hoja": sheet_name,
+            "metodo_modulos": metodo_modulos,
+            "metodo_nota_final": metodo_final,
+            "modulos": {
+                str(num): _col_info(col) for num, col in sorted(mod_cols.items())
+            },
+            "nota_final": _col_info(final_col),
+            "avisos": list(dict.fromkeys(avisos_notas)),
+            "filas_analizadas": info_inferencia.get("filas_analizadas"),
+        })
+
     # Columnas donde tiene sentido buscar el relleno naranja de "estudiante excluido".
     # El color de exclusión marca al ESTUDIANTE (sus columnas de identidad/nombre) y,
     # en algunos formatos, también las de calificaciones. Se EXCLUYEN columnas extra
@@ -355,7 +825,6 @@ def parse_notas_archivo(
 
     estudiantes: List[EstudianteNotas] = []
     secciones_map: Dict[str, Dict[str, str]] = {}
-    max_row = ws.max_row or 1
 
     for r in range(2, max_row + 1):
         # Si la fila está completamente vacía, saltarla

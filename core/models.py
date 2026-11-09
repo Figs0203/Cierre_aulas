@@ -224,6 +224,11 @@ class AulaCierreResult:
     # Número correlativo sugerido para inicio en Certificados
     start_consecutivo: int = 1
 
+    # Detección de columnas del archivo de Notas: hoja, método (encabezados o
+    # posicional), módulos, nota final y avisos. Permite mostrar en consola qué
+    # columnas se interpretaron y verificar el mapeo.
+    notas_deteccion: dict[str, Any] = field(default_factory=dict)
+
     # Hashes de integridad
     hashes_before: dict[str, str] = field(default_factory=dict)
     hashes_after: dict[str, str] = field(default_factory=dict)

@@ -235,6 +235,23 @@ oficiales de la biblioteca. Ajustes recientes (formato oficial):
   "Cuestionario N", "Buzón N", "Foro N", "Taller N", etc.
   (`normalization/headers.py:_MODULE_REGEX`). Caso real CMI121: la columna
   "Cuestionario 1: ..." no se detectaba y el módulo 1 se ignoraba.
+
+- **Respaldo POSICIONAL de Notas (encabezados atípicos)**: si los encabezados no
+  permiten reconocer los módulos o la nota final, `parsing/notas_parser.py:
+  _infer_grade_columns` infiere las columnas por posición: de izquierda a
+  derecha, módulo 1…N y la **última columna numérica** es la nota final. Solo se
+  activa cuando falta el mapeo por encabezado (nunca lo reemplaza). Cada columna
+  se valida con sus **datos**: mayoría de valores numéricos, sin booleanos, sin
+  fechas, sin formato de porcentaje, sin identidad y con valores en rango
+  plausible (máx. 1000, mediana ≤ 100). Se toma el grupo de columnas numéricas
+  más a la derecha (tolera un hueco) y se limita a **5 módulos** (regla oficial).
+  Si solo faltan algunos módulos y los detectados son un prefijo 1..k, se
+  completan por posición (`metodo_modulos` = `"mixto"`).
+  Las columnas simbólicas (`Aprobado`, `No aplica`, etc.) **no** se usan como
+  nota final en este respaldo: podrían ser un estado; se avisa. El diagnóstico
+  (hoja, método, columnas de módulos y final, avisos) se muestra en pantalla y
+  viaja en `AulaCierreResult.notas_deteccion`; también se usa para elegir la
+  hoja correcta cuando los títulos son atípicos (`_count_numeric_grade_columns`).
 - **Identidad en Notas**: se reconoce la columna "Documento" como documento del
   estudiante (además de "OrgDefinedId") — `parsing/notas_parser.py`.
 
@@ -370,5 +387,5 @@ oficiales de la biblioteca. Ajustes recientes (formato oficial):
     tablas dinámicas, listas de validación, gráficos e imágenes: solo edita las
     celdas y añade estilos; nunca elimina partes del paquete.
 
-Última verificación: **166 tests OK** (`python -m pytest tests -q`). El grafo de
+Última verificación: **175 tests OK** (`python -m pytest tests -q`). El grafo de
 conocimiento se regenera con `graphify update .` tras cada cambio de código.
