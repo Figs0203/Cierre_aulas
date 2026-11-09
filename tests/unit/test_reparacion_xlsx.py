@@ -235,6 +235,20 @@ class TestPatcherFormulasCompartidas(unittest.TestCase):
             self.assertIn('r="A1"', xml)
             self.assertIn('r="A2"', xml)
 
+    def test_aborta_si_el_archivo_cambio_mientras_se_procesa(self):
+        """Si Excel/OneDrive guarda el libro durante el cierre, no se sobrescribe."""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = _build(Path(tmp), _sheet())
+            patcher = XlsxPatcher(path)
+            patcher.sheet("Formato").set_cell(2, 2, "X", has_value=True)
+
+            # Simular un guardado externo (cambia el tamaño y la fecha).
+            path.write_bytes(path.read_bytes() + b"\0")
+
+            with self.assertRaises(RuntimeError) as ctx:
+                patcher.save()
+            self.assertIn("cambió mientras", str(ctx.exception))
+
     def test_no_duplica_calcpr_si_no_es_autocerrado(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = _build(

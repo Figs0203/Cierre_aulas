@@ -922,6 +922,13 @@ class XlsxPatcher:
                 self._infos[info.filename] = info
                 self._members[info.filename] = zf.read(info.filename)
 
+        # Huella del archivo al cargarlo: si cambia antes de guardar, significa
+        # que Excel/OneDrive lo modificó mientras se procesaba. Sobrescribirlo
+        # generaría «Conflicto de combinación» o pérdida de cambios.
+        _stat = self.path.stat()
+        self._mtime_ns = _stat.st_mtime_ns
+        self._size = _stat.st_size
+
         self._sheet_map = sheet_paths(self._members)
         styles_xml = self._members.get("xl/styles.xml")
         self.styles = _StyleBook(
@@ -1082,6 +1089,21 @@ class XlsxPatcher:
                 for name, data in changed_parts.items():
                     if name not in written:
                         zf_out.writestr(name, data)
+            try:
+                actual = self.path.stat()
+                cambio = (
+                    actual.st_mtime_ns != self._mtime_ns
+                    or actual.st_size != self._size
+                )
+            except OSError:
+                cambio = True
+            if cambio:
+                raise RuntimeError(
+                    f"No se escribió '{self.path.name}': el archivo cambió mientras "
+                    "se procesaba (¿se guardó en Excel o se sincronizó con "
+                    "OneDrive/SharePoint?). El archivo NO se modificó. Ciérrelo, "
+                    "espere a que termine la sincronización y vuelva a intentarlo."
+                )
             try:
                 os.replace(tmp_path, self.path)
             except PermissionError as exc:

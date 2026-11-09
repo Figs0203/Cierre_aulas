@@ -69,6 +69,7 @@ from output.xlsx_patcher import (
     CeldaProtegidaError,
     PreservationReport,
     XlsxPatcher,
+    column_letter,
     verify_preservation,
 )
 
@@ -136,6 +137,9 @@ class DirectUpdateReport:
     # Celdas no escritas por ser fórmula matricial o maestra de fórmula compartida
     # (reemplazarlas dejaría el libro dañado).
     sistematizacion_celdas_protegidas: int = 0
+    # Columnas de cierre que usó el cierre (clave -> 'AR (44)'), para auditar que
+    # la detección de encabezados apuntó a las columnas correctas.
+    columnas_sistematizacion: Dict[str, str] = field(default_factory=dict)
     certificados_rows_appended: int = 0
     # Ubicación exacta de lo anexado, para que el usuario pueda comprobarlo:
     certificados_hoja: str = ""
@@ -1402,15 +1406,75 @@ def _valores_equivalentes(actual: Any, nuevo: Any) -> bool:
         return False
 
 
+def _archivos_de_bloqueo(path: Path) -> List[Path]:
+    """Archivos que crea Excel/LibreOffice mientras el libro está abierto.
+
+    Excel crea ``~$<nombre>.xlsx`` en la misma carpeta. LibreOffice crea
+    ``.~lock.<nombre>#``. Detectar ese archivo es más fiable que intentar abrir
+    el libro: en carpetas de OneDrive/SharePoint el bloqueo puede no impedir la
+    apertura y, sin embargo, Excel sigue teniendo el libro cargado en memoria.
+    """
+    return [
+        path.with_name(f"~${path.name}"),
+        path.with_name(f".~lock.{path.name}#"),
+    ]
+
+
+def _problema_libro_compartido(path: Path) -> Optional[str]:
+    """Describe si el libro usa el modo 'Libro compartido' de Excel.
+
+    Los libros compartidos guardan el control de cambios en ``xl/revisions/`` y
+    en ``<fileSharing>``. Si se edita el XML por fuera de Excel, al abrirlo
+    aparecen los avisos **«Conflicto de combinación» / «Cambios sin combinar»**
+    (justo lo que reporta el usuario). Por eso no se deben editar directamente.
+    """
+    try:
+        with zipfile.ZipFile(path) as zf:
+            nombres = set(zf.namelist())
+            if any(n.startswith("xl/revisions/") for n in nombres):
+                return "es un LIBRO COMPARTIDO con control de cambios (xl/revisions)"
+            workbook = zf.read("xl/workbook.xml").decode("utf-8", "ignore")
+            if "<fileSharing" in workbook:
+                return "es un LIBRO COMPARTIDO (<fileSharing>)"
+    except Exception:  # noqa: BLE001 - el diagnóstico no debe romper el preflight
+        return None
+    return None
+
+
 def _check_file_writable(path: Path) -> Optional[str]:
     """Devuelve un mensaje accionable si el archivo no se puede escribir.
 
-    Detecta el caso más habitual del cierre: el libro oficial abierto en Excel
-    (o marcado como solo lectura), que en Windows termina en 'WinError 5:
-    acceso denegado' al reemplazar el archivo.
+    Detecta los casos que producen bloqueos y conflictos de Excel:
+
+    * El libro está abierto en Excel/LibreOffice (archivo de bloqueo ``~$``).
+    * El libro es un **libro compartido** (control de cambios): editarlo por
+      fuera de Excel genera «Conflicto de combinación».
+    * El archivo está marcado como solo lectura o bloqueado por otro programa.
     """
     if not path.exists():
         return f"No existe el archivo '{path.name}'."
+
+    for bloqueo in _archivos_de_bloqueo(path):
+        if bloqueo.exists():
+            return (
+                f"'{path.name}' está ABIERTO en Excel (se encontró el archivo de "
+                f"bloqueo '{bloqueo.name}'). Ciérrelo en Excel (escritorio y web), "
+                "espere a que OneDrive/SharePoint termine de sincronizar y vuelva "
+                "a intentar el cierre. No se modificó ningún archivo."
+            )
+
+    problema_compartido = _problema_libro_compartido(path)
+    if problema_compartido:
+        return (
+            f"'{path.name}' {problema_compartido}. Editar ese libro por fuera de "
+            "Excel produce el aviso «Conflicto de combinación / Cambios sin "
+            "combinar». En Excel: Revisar → Compartir libro → desactive "
+            "'Permitir cambios por varios usuarios', guarde, CIERRE el libro y "
+            "vuelva a ejecutar el cierre. Después puede volver a compartirlo. "
+            "(El cierre conserva tablas dinámicas, listas de validación, gráficos "
+            "e imágenes: no las elimina)."
+        )
+
     try:
         with open(path, "r+b"):
             pass
@@ -1422,6 +1486,30 @@ def _check_file_writable(path: Path) -> Optional[str]:
     except OSError as exc:
         return f"No se pudo comprobar el acceso a '{path.name}': {exc}"
     return None
+
+
+def cloud_sync_warnings(file_paths: Dict[str, Path | str]) -> List[str]:
+    """Avisos para archivos en carpetas sincronizadas con OneDrive/SharePoint.
+
+    Editar el archivo local mientras Excel/OneDrive lo tiene abierto o a medio
+    sincronizar produce «CARGA BLOQUEADA» o conflictos de combinación. No se
+    aborta (la carpeta puede ser la ubicación normal de trabajo), pero se avisa
+    antes de aplicar el cierre.
+    """
+    avisos: List[str] = []
+    for role in ("sistematizacion", "certificados", "control_aulas"):
+        ruta = file_paths.get(role)
+        if not ruta:
+            continue
+        p = Path(ruta).resolve()
+        partes = [parte.lower() for parte in p.parts]
+        if any("onedrive" in parte or "sharepoint" in parte for parte in partes):
+            avisos.append(
+                f"'{p.name}' está en una carpeta sincronizada con OneDrive/SharePoint. "
+                "Cierre el libro en Excel (escritorio y web) y espere a que la "
+                "sincronización termine antes de ejecutar el cierre."
+            )
+    return avisos
 
 
 def _diagnosticar_libros_oficiales(file_paths: Dict[str, Path | str]) -> List[str]:
@@ -1563,6 +1651,8 @@ def apply_direct_cierre(
         DirectUpdateReport con las estadísticas de actualización.
     """
     report = DirectUpdateReport(timestamp=datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    # Avisos de sincronización: se muestran también en el informe final.
+    report.warnings.extend(cloud_sync_warnings(file_paths))
 
     path_sist = Path(file_paths["sistematizacion"]).resolve()
     path_cert = Path(file_paths["certificados"]).resolve()
@@ -1639,6 +1729,22 @@ def apply_direct_cierre(
         # Mapeo de columnas relevantes desde el primer estudiante
         first_es = all_matches[0][0].estudiante_sist if all_matches else None
         col_map = first_es.column_indices if first_es and first_es.column_indices else {}
+        if col_map:
+            columnas_detectadas: Dict[str, str] = {}
+            for clave, idx in col_map.items():
+                if not isinstance(idx, int) or idx <= 0:
+                    continue
+                try:
+                    encabezado = str(ws_sist.cell(1, idx).value or "").strip()
+                except Exception:  # noqa: BLE001 - solo es informativo
+                    encabezado = ""
+                if len(encabezado) > 45:
+                    encabezado = encabezado[:42] + "..."
+                ubicacion = f"{column_letter(idx)} ({idx})"
+                columnas_detectadas[str(clave)] = (
+                    f"{ubicacion} — '{encabezado}'" if encabezado else ubicacion
+                )
+            report.columnas_sistematizacion = columnas_detectadas
 
         col_nombres = col_map.get("nombres")
         col_apellidos = col_map.get("apellidos")

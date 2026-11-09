@@ -33,6 +33,7 @@ from input.file_selector import (
 )
 from output.direct_updater import (
     apply_direct_cierre,
+    cloud_sync_warnings,
     files_not_writable,
     find_latest_backup,
     restore_last_backup,
@@ -375,6 +376,26 @@ def handle_direct_cierre_mode():
     else:
         print("  ↳ Se mantienen intactas las notas finales ya escritas.")
 
+    avisos_sync = cloud_sync_warnings(files)
+    for aviso in avisos_sync:
+        print(f"\n⚠️  {aviso}")
+    if avisos_sync:
+        print("  ⚠️  Si el libro sigue abierto o a medio sincronizar, Excel mostrará")
+        print("      «CARGA BLOQUEADA» o «Conflicto de combinación».")
+        try:
+            resp_sync = input(
+                "   ¿Confirma que los archivos están CERRADOS en Excel y "
+                "sincronizados? (SI/NO): "
+            ).strip().upper()
+        except (EOFError, KeyboardInterrupt):
+            resp_sync = "NO"
+        if resp_sync != "SI":
+            print(
+                "\n❌ Operación cancelada. Cierre los archivos en Excel (escritorio "
+                "y web), espere a que OneDrive/SharePoint sincronice y reintente."
+            )
+            return
+
     try:
         confirm = input("\n¿Está seguro de aplicar estos cambios directamente en los archivos oficiales? (Escriba 'SI' para confirmar): ").strip()
         if confirm != "SI":
@@ -430,6 +451,23 @@ def handle_direct_cierre_mode():
                 "compartidas/matriciales: "
                 f"{report.sistematizacion_celdas_protegidas} (ver advertencias)"
             )
+        claves_cierre = {
+            "promedio": "Nota final",
+            "estado": "Estado para certificación",
+            "elaboro": "Se elaboró certificado",
+            "codigo_cert": "Código del certificado",
+            "envio": "Se envió certificado",
+            "fecha_envio": "Fecha de envío",
+        }
+        columnas_cierre = {
+            texto: report.columnas_sistematizacion[clave]
+            for clave, texto in claves_cierre.items()
+            if clave in report.columnas_sistematizacion
+        }
+        if columnas_cierre:
+            print("\n🧭 Columnas de cierre usadas en Sistematización (verifíquelas):")
+            for texto, ubic in columnas_cierre.items():
+                print(f"   • {texto}: {ubic}")
         print(f"   • Certificados — Filas de aprobados anexadas al final: {report.certificados_rows_appended}")
         if report.certificados_fila_inicial:
             print(
@@ -759,6 +797,30 @@ def handle_batch_cierre_mode():
         print("\n❌ Operación cancelada.")
         return
     actualizar_nota_final = respuesta_nota.strip().upper() == "SI"
+
+    avisos_sync: list[str] = []
+    for item in items:
+        for aviso in cloud_sync_warnings(item["files"]):
+            if aviso not in avisos_sync:
+                avisos_sync.append(aviso)
+    for aviso in avisos_sync:
+        print(f"\n⚠️  {aviso}")
+    if avisos_sync:
+        print("  ⚠️  Si el libro sigue abierto o a medio sincronizar, Excel mostrará")
+        print("      «CARGA BLOQUEADA» o «Conflicto de combinación».")
+        try:
+            resp_sync = input(
+                "   ¿Confirma que los archivos están CERRADOS en Excel y "
+                "sincronizados? (SI/NO): "
+            ).strip().upper()
+        except (EOFError, KeyboardInterrupt):
+            resp_sync = "NO"
+        if resp_sync != "SI":
+            print(
+                "\n❌ Operación cancelada. Cierre los archivos en Excel (escritorio "
+                "y web), espere a que OneDrive/SharePoint sincronice y reintente."
+            )
+            return
 
     try:
         confirm = input(

@@ -355,6 +355,20 @@ oficiales de la biblioteca. Ajustes recientes (formato oficial):
     no crear miles de celdas si `max_column` viene inflado; las filas/celdas sin
     atributo `r` (opcional en OOXML) se conservan asignando su posición implícita
     en lugar de descartarse.
+  - **Conflictos de combinación (reporte real AR10)**: el cierre se detiene si el
+    libro está abierto (archivo de bloqueo `~$<nombre>.xlsx`), si es un **libro
+    compartido** (`<fileSharing>` o `xl/revisions/`) o si cambió mientras se
+    procesaba (`XlsxPatcher` compara mtime/tamaño justo antes de `os.replace`).
+    El aviso «Conflicto de combinación / Cambios sin combinar» aparece cuando
+    Excel mantiene el libro cargado o el libro usa control de cambios compartido:
+    la automatización no debe escribir sobre esa sesión. En carpetas de
+    OneDrive/SharePoint se pide confirmación explícita de que el archivo está
+    cerrado (escritorio y web) y sincronizado.
+  - Se informa el **mapa de columnas** usado en Sistematización (letra, índice y
+    encabezado) para detectar de inmediato una detección equivocada (p. ej. un
+    `No aplica` escrito en AR en lugar de la columna real). El cierre conserva
+    tablas dinámicas, listas de validación, gráficos e imágenes: solo edita las
+    celdas y añade estilos; nunca elimina partes del paquete.
 
-Última verificación: **163 tests OK** (`python -m pytest tests -q`). El grafo de
+Última verificación: **166 tests OK** (`python -m pytest tests -q`). El grafo de
 conocimiento se regenera con `graphify update .` tras cada cambio de código.

@@ -13,6 +13,7 @@ import os
 import stat
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 from unittest import mock
 
@@ -147,6 +148,45 @@ class TestCierreRobusto(unittest.TestCase):
                 self.assertFalse((tmpdir / "bk").exists())
             finally:
                 os.chmod(files["sistematizacion"], stat.S_IWRITE)
+
+    def test_detecta_archivo_de_bloqueo_de_excel(self):
+        """Excel deja '~$<nombre>.xlsx' mientras el libro está abierto."""
+        with tempfile.TemporaryDirectory() as tmp_str:
+            tmpdir = Path(tmp_str)
+            files = _crear_archivos(tmpdir)
+            bloqueo = files["sistematizacion"].with_name(
+                "~$" + files["sistematizacion"].name
+            )
+            bloqueo.write_text("", encoding="utf-8")
+            try:
+                mensajes = files_not_writable(files)
+                self.assertTrue(mensajes)
+                self.assertIn("ABIERTO", mensajes[0])
+            finally:
+                bloqueo.unlink()
+
+    def test_detecta_libro_compartido(self):
+        """Los libros compartidos generan 'Conflicto de combinación'."""
+        with tempfile.TemporaryDirectory() as tmp_str:
+            tmpdir = Path(tmp_str)
+            files = _crear_archivos(tmpdir)
+            path = files["sistematizacion"]
+            with zipfile.ZipFile(path) as zf:
+                parts = {n: zf.read(n) for n in zf.namelist()}
+            wb = parts["xl/workbook.xml"].decode("utf-8")
+            wb = wb.replace(
+                "</workbook>",
+                '<fileSharing readOnlyRecommended="0"/></workbook>',
+            )
+            parts["xl/workbook.xml"] = wb.encode("utf-8")
+            with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as zf:
+                for name, data in parts.items():
+                    zf.writestr(name, data)
+
+            mensajes = files_not_writable(files)
+            self.assertTrue(
+                any("LIBRO COMPARTIDO" in m for m in mensajes), mensajes
+            )
 
     def test_revierte_si_un_paso_falla(self):
         with tempfile.TemporaryDirectory() as tmp_str:
