@@ -40,18 +40,158 @@ import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from xml.etree import ElementTree
 from xml.sax.saxutils import escape
 
 __all__ = [
     "XlsxPatcher",
     "BorderSpec",
     "PreservationReport",
+    "CeldaProtegidaError",
     "verify_preservation",
+    "validate_sheet_xml",
     "sheet_paths",
     "column_letter",
     "column_index",
     "cell_reference",
 ]
+
+
+class CeldaProtegidaError(ValueError):
+    """Se intentó sobrescribir una celda que no puede alterarse sin romper el libro.
+
+    El caso típico es la celda **maestra de una fórmula compartida** de Excel:
+    las demás celdas del grupo guardan solo `si="N"` y dependen de que el maestro
+    conserve la fórmula. Si se reemplaza por un valor, esas celdas quedan
+    huérfanas, Excel repara el libro y puede bloquear el guardado ("CARGA
+    BLOQUEADA"). Nunca se debe escribir en una celda así.
+    """
+
+    def __init__(self, ref: str, motivo: str):
+        super().__init__(f"{ref}: {motivo}")
+        self.ref = ref
+        self.motivo = motivo
+
+
+# Caracteres de control que XML 1.0 no admite. Si llegan a una celda, Excel
+# considera el libro dañado y lo "repara"; se eliminan al serializar valores.
+_INVALID_XML_CHARS_RE = re.compile(r"[\x00-\x08\x0B\x0C\x0E-\x1F]")
+
+# Elemento <f> (fórmula) dentro de una celda, autocerrado o con contenido.
+_FORMULA_RE = re.compile(r"<f\b([^>]*?)(/>|>(.*?)</f>)", re.DOTALL)
+
+# Celdas dentro de una fila (para validar duplicados y referencias).
+_ROW_CELL_RE = re.compile(r"<c\b([^>]*?)(/>|>(.*?)</c>)", re.DOTALL)
+
+
+def _formula_info(inner: Optional[str]) -> Optional[Dict[str, Any]]:
+    """Describe la fórmula de una celda: tipo, índice compartido y texto.
+
+    Returns:
+        None si la celda no tiene `<f>`; si lo tiene, un dict con las claves
+        ``t`` (p. ej. ``"shared"``/``"array"``), ``si`` (índice del grupo
+        compartido), ``ref`` (rango del maestro), ``texto`` y ``autocerrada``.
+    """
+    if not inner:
+        return None
+    m = _FORMULA_RE.search(inner)
+    if not m:
+        return None
+    attrs = m.group(1) or ""
+    return {
+        "t": _attr(attrs, "t"),
+        "si": _attr(attrs, "si"),
+        "ref": _attr(attrs, "ref"),
+        "texto": "" if m.group(2) == "/>" else (m.group(3) or ""),
+        "autocerrada": m.group(2) == "/>",
+    }
+
+
+def _shared_formula_groups(xml: str) -> Dict[str, Dict[str, Any]]:
+    """Indexa las fórmulas compartidas (`<f t="shared" si="N">`) de una hoja.
+
+    Returns:
+        ``{si: {"ref": str|None, "maestro": ref|None, "esclavos": [ref, ...]}}``.
+    """
+    grupos: Dict[str, Dict[str, Any]] = {}
+    for rm in _ROW_CELL_RE.finditer(xml):
+        attrs = rm.group(1) or ""
+        ref = _attr(attrs, "r") or ""
+        info = _formula_info("" if rm.group(2) == "/>" else (rm.group(3) or ""))
+        if not info or info["t"] != "shared" or info["si"] is None:
+            continue
+        grupo = grupos.setdefault(
+            info["si"], {"ref": None, "maestro": None, "esclavos": []}
+        )
+        if info["ref"]:
+            grupo["ref"] = info["ref"]
+            grupo["maestro"] = ref
+        else:
+            grupo["esclavos"].append(ref)
+    return grupos
+
+
+def validate_sheet_xml(xml: str) -> List[str]:
+    """Comprueba que el XML de una hoja no obligue a Excel a "reparar" el libro.
+
+    Valida lo que el patcher puede romper y que el esquema de Excel rechaza:
+
+    * XML bien formado (ElementTree).
+    * Sin caracteres de control prohibidos por XML 1.0.
+    * Sin fórmulas compartidas huérfanas (`si="N"` sin maestro con `ref`).
+    * Sin celdas duplicadas dentro de una misma fila.
+    * Sin `t="inlineStr"` sin su bloque `<is>`.
+    * Sin celdas cuya referencia no coincida con el número de fila.
+
+    Returns:
+        Lista de problemas legibles; vacía si la hoja es válida.
+    """
+    problemas: List[str] = []
+
+    try:
+        ElementTree.fromstring(xml)
+    except ElementTree.ParseError as exc:
+        return [f"XML mal formado: {exc}"]
+
+    if _INVALID_XML_CHARS_RE.search(xml):
+        problemas.append("contiene caracteres de control no válidos en XML")
+
+    grupos = _shared_formula_groups(xml)
+    for si, grupo in grupos.items():
+        if grupo["esclavos"] and grupo["maestro"] is None:
+            problemas.append(
+                f"fórmula compartida huérfana (si={si}): "
+                f"{len(grupo['esclavos'])} celda(s) dependen de un maestro que ya no existe"
+            )
+
+    for row_m in re.finditer(r"<row\b([^>]*?)(/>|>(.*?)</row>)", xml, re.DOTALL):
+        if row_m.group(2) == "/>":
+            continue
+        numero = _attr(row_m.group(1) or "", "r")
+        vistos = set()
+        for cm in _CELL_RE.finditer(row_m.group(3) or ""):
+            attrs = cm.group(1) or ""
+            ref = _attr(attrs, "r") or ""
+            if not ref:
+                # En OOXML `r` es opcional: la celda toma la posición siguiente.
+                continue
+            m = _REF_RE.match(ref)
+            if m and numero and m.group(2) != str(numero):
+                problemas.append(
+                    f"la celda {ref} está dentro de la fila {numero}"
+                )
+            if ref in vistos:
+                problemas.append(f"celda duplicada {ref} en la fila {numero}")
+            vistos.add(ref)
+            if _attr(attrs, "t") == "inlineStr":
+                if cm.group(2) == "/>" or "<is" not in (cm.group(3) or ""):
+                    problemas.append(f"celda {ref} es inlineStr pero no tiene <is>")
+    return problemas
+
+
+def _clean_xml_text(text: str) -> str:
+    """Elimina caracteres de control que XML 1.0 prohíbe."""
+    return _INVALID_XML_CHARS_RE.sub("", text)
 
 
 # ---------------------------------------------------------------------------
@@ -439,35 +579,96 @@ class _SheetEditor:
         self.rows: Dict[int, _Row] = {}
         self._parse_rows(block.group(3) or "")
 
+        # Grupos de fórmulas compartidas (Excel las crea al arrastrar una fórmula).
+        # Se indexan para no destruir el maestro y dejar huérfanas a las demás
+        # celdas, lo que obligaría a Excel a "reparar" el libro.
+        self._shared_groups = self._index_shared_formulas()
+
         # Estilos por columna (`<col style="N">`), para heredarlos al crear celdas.
         self._col_styles = self._parse_col_styles(xml)
 
     # -- parsing ---------------------------------------------------------
+
+    def _index_shared_formulas(self) -> Dict[str, Dict[str, Any]]:
+        """Indexa las fórmulas compartidas de la hoja: maestro y nº de esclavas."""
+        grupos: Dict[str, Dict[str, Any]] = {}
+        for row in self.rows.values():
+            for cell in row.cells.values():
+                info = _formula_info(cell.inner)
+                if not info or info["t"] != "shared" or info["si"] is None:
+                    continue
+                grupo = grupos.setdefault(
+                    info["si"],
+                    {"maestro": None, "ref": None, "texto": "", "esclavos": 0},
+                )
+                if info["ref"]:
+                    grupo["maestro"] = cell.ref
+                    grupo["ref"] = info["ref"]
+                    grupo["texto"] = info["texto"]
+                else:
+                    grupo["esclavos"] += 1
+        return grupos
+
+    def _motivo_bloqueo(self, row: int, col: int) -> Optional[str]:
+        """Por qué no se puede reemplazar el valor de esta celda (o None)."""
+        fila = self.rows.get(row)
+        cell = fila.cells.get(col) if fila else None
+        info = _formula_info(cell.inner) if cell else None
+        if not info:
+            return None
+        if info["t"] == "array":
+            return (
+                "contiene una fórmula matricial (array); reemplazarla rompería "
+                "las celdas que dependen de ella"
+            )
+        if info["t"] == "shared" and info["ref"]:
+            grupo = self._shared_groups.get(info["si"] or "", {})
+            if grupo.get("esclavos", 0):
+                return (
+                    "es la celda maestra de una fórmula compartida usada por "
+                    f"{grupo['esclavos']} celda(s) más; reemplazarla dejaría "
+                    "fórmulas huérfanas y Excel repararía el libro"
+                )
+        return None
+
     def _parse_rows(self, inner: str) -> None:
+        ultima_fila = 0
         for m in _ROW_RE.finditer(inner):
             attrs = m.group(1)
             number = int(_attr(attrs, "r") or 0)
-            if number <= 0:
-                continue
-            raw = m.group(0)
+            implicita = number <= 0
+            if implicita:
+                # En OOXML el atributo `r` de <row> es opcional: la fila toma la
+                # posición siguiente. Descartar estas filas borraría datos.
+                number = ultima_fila + 1
+                attrs = _set_attr(attrs, "r", str(number))
+            ultima_fila = number
+            raw = None if implicita else m.group(0)
             row = _Row(number=number, attrs=attrs, raw=raw)
             content = "" if m.group(2) == "/>" else (m.group(3) or "")
+            columna_implicita = 0
             for cm in _CELL_RE.finditer(content):
                 cattrs = cm.group(1)
                 ref = _attr(cattrs, "r") or ""
                 ref_m = _REF_RE.match(ref)
-                if not ref_m:
-                    continue
+                if ref_m:
+                    col = column_index(ref_m.group(1))
+                else:
+                    # El atributo `r` de <c> también es opcional: la celda sigue
+                    # a la anterior. Sin esto se perdían celdas al re-renderizar.
+                    col = columna_implicita + 1
+                    ref = cell_reference(number, col)
+                    cattrs = _set_attr(cattrs, "r", ref)
+                columna_implicita = col
                 cell = _Cell(
                     ref=ref,
-                    col=column_index(ref_m.group(1)),
+                    col=col,
                     attrs=cattrs,
                     inner=None if cm.group(2) == "/>" else (cm.group(3) or ""),
-                    raw=cm.group(0),
+                    raw=cm.group(0) if ref_m else None,
                 )
                 row.cells[cell.col] = cell
             # Mientras no se toque la fila se reutiliza su texto original tal cual.
-            row.raw = raw
             self.rows[number] = row
 
     @staticmethod
@@ -564,7 +765,18 @@ class _SheetEditor:
         has_value: bool = False,
         style: Optional[int] = None,
     ) -> None:
-        """Escribe un valor y/o un estilo en una celda, creándola si no existe."""
+        """Escribe un valor y/o un estilo en una celda, creándola si no existe.
+
+        Raises:
+            CeldaProtegidaError: si se intenta reemplazar el valor de una
+                fórmula matricial o de la celda maestra de una fórmula
+                compartida (el libro quedaría dañado).
+        """
+        if has_value:
+            motivo = self._motivo_bloqueo(row, col)
+            if motivo:
+                raise CeldaProtegidaError(cell_reference(row, col), motivo)
+
         cell = self._cell(row, col)
         touched = False
 
@@ -599,8 +811,11 @@ class _SheetEditor:
         if isinstance(value, bool):
             return "b", "<v>%d</v>" % (1 if value else 0)
         if isinstance(value, (int, float)):
+            if isinstance(value, float) and (value != value or value in (float("inf"), float("-inf"))):
+                # NaN/Infinito no son números válidos para Excel: se deja vacía.
+                return None, None
             return None, "<v>%s</v>" % _format_number(value)
-        text = str(value)
+        text = _clean_xml_text(str(value))
         if text.startswith("="):
             return None, "<f>%s</f>" % escape(text[1:])
         return "inlineStr", '<is><t xml:space="preserve">%s</t></is>' % escape(text)
@@ -749,10 +964,18 @@ class XlsxPatcher:
         if 'fullCalcOnLoad="1"' in xml:
             return
 
-        m = re.search(r"<calcPr\b([^>]*?)/>", xml)
+        m = re.search(r"<calcPr\b([^>]*?)(/>|>(.*?)</calcPr>)", xml, re.DOTALL)
         if m:
             attrs = _set_attr(m.group(1), "fullCalcOnLoad", "1")
-            xml = xml[:m.start()] + "<calcPr%s/>" % attrs + xml[m.end():]
+            if m.group(2) == "/>":
+                bloque = "<calcPr%s/>" % attrs
+            else:
+                bloque = "<calcPr%s>%s</calcPr>" % (attrs, m.group(3) or "")
+            xml = xml[:m.start()] + bloque + xml[m.end():]
+        elif "<calcPr" in xml:
+            # Forma no reconocida: no se toca para no crear un <calcPr> duplicado
+            # (el esquema admite uno solo y Excel "repararía" el libro).
+            return
         else:
             attrs = ' calcId="191029" fullCalcOnLoad="1"'
             after = ("<oleSize", "<customWorkbookViews", "<pivotCaches", "<smartTagPr",
@@ -786,9 +1009,29 @@ class XlsxPatcher:
         for name, editor in self._editors.items():
             if editor.dirty:
                 part = self._sheet_map[name]
-                changed_parts[part] = editor.render().encode("utf-8")
+                rendered = editor.render()
+                # Red de seguridad: si la hoja resultante no es válida, NO se
+                # escribe nada. Antes se guardaba igual y Excel "reparaba" el
+                # libro (perdiendo fórmulas) o bloqueaba el guardado.
+                problemas = validate_sheet_xml(rendered)
+                if problemas:
+                    detalle = "; ".join(problemas[:3])
+                    extra = "…" if len(problemas) > 3 else ""
+                    raise ValueError(
+                        f"No se escribió '{self.path.name}': la hoja '{name}' "
+                        f"quedaría inválida y Excel tendría que repararla "
+                        f"({detalle}{extra}). El archivo original no se modificó."
+                    )
+                changed_parts[part] = rendered.encode("utf-8")
 
         if self.styles.changed:
+            try:
+                ElementTree.fromstring(self.styles.xml)
+            except ElementTree.ParseError as exc:
+                raise ValueError(
+                    f"No se escribió '{self.path.name}': 'xl/styles.xml' quedaría "
+                    f"mal formado ({exc}). El archivo original no se modificó."
+                ) from exc
             changed_parts["xl/styles.xml"] = self.styles.xml.encode("utf-8")
 
         self._recalc_modified = False
@@ -798,6 +1041,22 @@ class XlsxPatcher:
         if force_recalc and touched_sheets and self._workbook_has_formulas():
             self._recalc_needed = True
         self._apply_recalc()
+
+        if self._recalc_modified:
+            wb_xml = self._members.get("xl/workbook.xml", b"").decode("utf-8", "ignore")
+            try:
+                ElementTree.fromstring(wb_xml)
+            except ElementTree.ParseError as exc:
+                raise ValueError(
+                    f"No se escribió '{self.path.name}': 'xl/workbook.xml' quedaría "
+                    f"mal formado ({exc}). El archivo original no se modificó."
+                ) from exc
+            if len(re.findall(r"<calcPr\b", wb_xml)) > 1:
+                raise ValueError(
+                    f"No se escribió '{self.path.name}': 'xl/workbook.xml' tendría "
+                    "más de un <calcPr> (Excel lo repararía). "
+                    "El archivo original no se modificó."
+                )
 
         if not changed_parts and not self._recalc_modified:
             # Nada que escribir: el archivo queda exactamente como estaba.

@@ -76,6 +76,7 @@ El menú de `main.py` (fuente de verdad; el README puede estar desactualizado):
 | 6 | Restaurar Último Backup |
 | 7 | Diagnóstico de Cruce de Identidades (sin datos personales) |
 | 8 | Cierre por Lotes (varias aulas; Sistematización y Control compartidos) |
+| 9 | Diagnosticar / Reparar un `.xlsx` dañado (crea `<nombre>_reparado.xlsx`) |
 
 ## 🧩 Arquitectura (módulos)
 
@@ -322,5 +323,38 @@ oficiales de la biblioteca. Ajustes recientes (formato oficial):
   numeración real de certificados al escribir). Si un aula falla de forma crítica,
   se detiene el lote y se informa cuáles quedaron cerradas.
 
-Última verificación: **146 tests OK** (`python -m pytest tests -q`). El grafo de
+- **Blindaje contra libros dañados y recuperación (reporte real «CARGA BLOQUEADA»)**:
+  - **Fórmulas compartidas**: Excel guarda las fórmulas arrastradas como un grupo
+    (`<f t="shared" ref="L2:L3" si="0">…</f>` en la maestra y
+    `<f t="shared" si="0"/>` en las esclavas). `XlsxPatcher.set_cell` **nunca**
+    sobrescribe la celda maestra ni una fórmula matricial: lanza
+    `CeldaProtegidaError` y `apply_direct_cierre` omite esa celda y lo informa
+    (`sistematizacion_celdas_protegidas`). Antes, la corrección de la nota final
+    reemplazaba la maestra, las esclavas quedaban huérfanas y Excel "reparaba" el
+    libro (perdiendo fórmulas) y mostraba «CARGA BLOQUEADA — Se ha producido un
+    problema con este archivo…».
+  - **Validación antes de escribir**: `XlsxPatcher.save` valida con
+    `validate_sheet_xml` (XML bien formado, sin caracteres de control, sin
+    esclavas huérfanas, sin celdas duplicadas) y `styles.xml`/`workbook.xml`
+    (un solo `<calcPr>`); si algo falla, **no escribe nada** y `apply_direct_cierre`
+    revierte. `_apply_recalc` ya no duplica `<calcPr>` cuando no es autocerrado.
+  - **Preflight del cierre**: `_diagnosticar_libros_oficiales` analiza los tres
+    oficiales antes de crear respaldos; si uno ya está dañado, aborta para no
+    empeorarlo ni sobrescribir un respaldo sano.
+  - **Recuperación**: `output/xlsx_recovery.py` (`diagnose_xlsx`, `repair_xlsx`;
+    opción [9]) diagnostica ZIP/XML, fórmulas compartidas huérfanas, celdas
+    duplicadas, estilos e índices de `sharedStrings` fuera de rango, `<calcPr>`
+    duplicado y ampersands sin escapar. Repara en una **copia**
+    (`<nombre>_reparado.xlsx`), nunca sobre el original, y deja un
+    `<nombre>_diagnostico.txt`. El Modo 6 valida el respaldo único con
+    `diagnose_xlsx` antes de restaurar y advierte si también está dañado (en ese
+    caso restaurar no arregla el libro).
+  - **Robustez adicional**: se sanean caracteres de control XML al serializar
+    valores; `nan`/`inf` no se escriben; el borde de Sistematización se acota al
+    ancho real de la tabla (`_ancho_tabla_sistematizacion`, máx. 55 columnas) para
+    no crear miles de celdas si `max_column` viene inflado; las filas/celdas sin
+    atributo `r` (opcional en OOXML) se conservan asignando su posición implícita
+    en lugar de descartarse.
+
+Última verificación: **163 tests OK** (`python -m pytest tests -q`). El grafo de
 conocimiento se regenera con `graphify update .` tras cada cambio de código.

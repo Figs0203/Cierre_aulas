@@ -34,8 +34,10 @@ from input.file_selector import (
 from output.direct_updater import (
     apply_direct_cierre,
     files_not_writable,
+    find_latest_backup,
     restore_last_backup,
 )
+from output.xlsx_recovery import diagnose_xlsx, repair_xlsx
 from processing.cierre_orchestrator import run_cierre_pipeline
 from security.integrity import compute_sha256, verify_integrity
 from security.offline_check import check_offline_compliance
@@ -65,10 +67,11 @@ def show_menu() -> str:
     print("  [6] Modo 6 — Restaurar Último Backup en Archivos Oficiales")
     print("  [7] Diagnóstico de Cruce de Identidades (Notas ↔ Sistematización, sin datos personales)")
     print("  [8] Modo 8 — Cierre por Lotes (varias aulas; Sistematización y Control compartidos)")
+    print("  [9] Diagnosticar / Reparar un archivo .xlsx dañado (sin tocar el original)")
     print("  [0] Salir")
     print("-" * 76)
     try:
-        choice = input("Seleccione una opción (0-8): ").strip()
+        choice = input("Seleccione una opción (0-9): ").strip()
         return choice
     except (EOFError, KeyboardInterrupt):
         return "0"
@@ -420,6 +423,12 @@ def handle_direct_cierre_mode():
             print(
                 f"   • Sistematización — Notas finales corregidas (sobrescritas): "
                 f"{report.sistematizacion_promedios_actualizados}"
+            )
+        if report.sistematizacion_celdas_protegidas:
+            print(
+                "   • Sistematización — Celdas NO escritas por ser fórmulas "
+                "compartidas/matriciales: "
+                f"{report.sistematizacion_celdas_protegidas} (ver advertencias)"
             )
         print(f"   • Certificados — Filas de aprobados anexadas al final: {report.certificados_rows_appended}")
         if report.certificados_fila_inicial:
@@ -864,6 +873,40 @@ def handle_restore_backup_mode():
 
     files = select_all_four_files(use_gui=True)
 
+    # Verificar que los respaldos no estén dañados. Si el respaldo único se
+    # actualizó con un estado ya roto (por un cierre anterior), restaurarlo no
+    # arreglaría nada y podría hacer perder el estado actual.
+    respaldos_danados: list[str] = []
+    for role in ("sistematizacion", "certificados", "control_aulas"):
+        original = Path(files[role]).resolve()
+        respaldo = find_latest_backup(original)
+        if respaldo is None:
+            continue
+        try:
+            info = diagnose_xlsx(respaldo)
+        except Exception:  # noqa: BLE001 - nunca bloquea la restauración
+            continue
+        if info.tiene_danos_graves:
+            respaldos_danados.append(respaldo.name)
+    if respaldos_danados:
+        print("\n⚠️  ADVERTENCIA: el respaldo único también presenta daños:")
+        for nombre in respaldos_danados:
+            print(f"   • {nombre}")
+        print("   Restaurarlo NO arreglará el libro. Puede deberse a que un cierre")
+        print("   anterior ya había dejado el archivo dañado (el respaldo se")
+        print("   actualiza en cada cierre).")
+        print("   Recomendación: use la opción [9] para diagnosticar/reparar tanto el")
+        print("   archivo actual como el respaldo.")
+        try:
+            seguir = input(
+                "   ¿Desea restaurar de todos modos? (SI/NO): "
+            ).strip().upper()
+        except (EOFError, KeyboardInterrupt):
+            seguir = "NO"
+        if seguir != "SI":
+            print("\n❌ Operación cancelada. Ningún archivo fue modificado.")
+            return
+
     try:
         confirm = input("\n¿Está seguro de restaurar los archivos oficiales desde el respaldo único? (Escriba 'SI' para confirmar): ").strip()
         if confirm != "SI":
@@ -952,6 +995,91 @@ def handle_diagnose_mode():
     print("=" * 76)
 
 
+def handle_recovery_mode():
+    """Diagnostica y, si hace falta, repara una COPIA de un .xlsx dañado."""
+    print("\n" + "=" * 76)
+    print("DIAGNÓSTICO Y REPARACIÓN DE UN ARCHIVO .XLSX DAÑADO")
+    print("=" * 76)
+    print("Este modo NO modifica el archivo original: si se repara, crea una copia")
+    print("'<nombre>_reparado.xlsx' junto al original. Todo es 100% local.\n")
+
+    try:
+        ruta_txt = input(
+            "Ruta completa del archivo .xlsx a revisar (ENTER para cancelar): "
+        ).strip().strip('"').strip("'")
+    except (EOFError, KeyboardInterrupt):
+        ruta_txt = ""
+    if not ruta_txt:
+        print("\n↳ Operación cancelada. Ningún archivo fue modificado.")
+        return
+
+    ruta = Path(ruta_txt).expanduser()
+    if not ruta.exists():
+        print(f"\n❌ No existe el archivo: {ruta}")
+        return
+    if ruta.suffix.lower() not in (".xlsx", ".xlsm"):
+        print("\n⚠️ Debe ser un archivo .xlsx o .xlsm.")
+        return
+
+    print("\n⏳ Analizando la estructura interna (solo lectura)...")
+    try:
+        report = diagnose_xlsx(ruta)
+    except Exception as exc:  # noqa: BLE001
+        print(f"\n❌ No se pudo analizar el archivo: {exc}")
+        return
+
+    print("\n" + "=" * 76)
+    print("RESULTADO DEL DIAGNÓSTICO")
+    print("=" * 76)
+    print(report.resumen())
+    for problema in report.problemas:
+        print(f"  • {problema}")
+    for aviso in report.avisos:
+        print(f"  ↳ {aviso}")
+
+    if not report.hay_danos:
+        print("\n✅ No se detectaron daños estructurales en el libro.")
+        print("   Si Excel sigue mostrando «CARGA BLOQUEADA», el problema puede ser")
+        print("   de sincronización (OneDrive/SharePoint), de permisos o de que el")
+        print("   archivo está abierto en otro equipo. Copie el archivo a una carpeta")
+        print("   LOCAL (por ejemplo, el Escritorio), ábralo desde ahí y reintente.")
+        print("=" * 76)
+        return
+
+    print("\n💡 Se detectaron daños. Se puede generar una COPIA reparada.")
+    print("   El archivo original NO se modificará.")
+    try:
+        respuesta = input("¿Generar la copia reparada? (SI/NO): ").strip().upper()
+    except (EOFError, KeyboardInterrupt):
+        respuesta = "NO"
+    if respuesta != "SI":
+        print("\n↳ No se generó ninguna copia. El original sigue intacto.")
+        return
+
+    print("\n⏳ Generando la copia reparada...")
+    try:
+        resultado = repair_xlsx(ruta)
+    except Exception as exc:  # noqa: BLE001
+        print(f"\n❌ No se pudo reparar el archivo: {exc}")
+        return
+
+    print("\n" + resultado.resumen_reparacion())
+    if resultado.reparado and resultado.salida:
+        print(f"\n✅ COPIA REPARADA: {resultado.salida}")
+        print("   El archivo original NO se modificó.")
+        print("   Abra esa copia en Excel y compruebe que ya no pide reparación.")
+        if resultado.esclavas_convertidas:
+            print("   ℹ️ Las celdas con fórmulas compartidas conservaron su último")
+            print("      valor calculado (no se pierden datos). Si necesita la fórmula,")
+            print("      vuelva a arrastrarla en Excel.")
+    else:
+        print("\n⚠️ No se pudo completar la reparación automática.")
+        for problema in resultado.problemas_restantes:
+            print(f"  • {problema}")
+        print("   Guarde el informe de diagnóstico junto al archivo y compártalo.")
+    print("=" * 76)
+
+
 def main():
     print_banner()
 
@@ -974,11 +1102,13 @@ def main():
             handle_diagnose_mode()
         elif choice == "8":
             handle_batch_cierre_mode()
+        elif choice == "9":
+            handle_recovery_mode()
         elif choice in ("0", "q", "salir", "exit"):
             print("\nSaliendo del asistente. ¡Hasta pronto!")
             sys.exit(0)
         else:
-            print("\n⚠️ Opción no válida. Por favor seleccione 0, 1, 2, 3, 4, 5, 6, 7 u 8.")
+            print("\n⚠️ Opción no válida. Por favor seleccione una opción entre 0 y 9.")
 
 
 if __name__ == "__main__":

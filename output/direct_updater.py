@@ -64,7 +64,13 @@ from normalization.dates import (
     parse_date,
 )
 from normalization.text import format_ciclo, format_docente_coin, normalize_document
-from output.xlsx_patcher import BorderSpec, PreservationReport, XlsxPatcher, verify_preservation
+from output.xlsx_patcher import (
+    BorderSpec,
+    CeldaProtegidaError,
+    PreservationReport,
+    XlsxPatcher,
+    verify_preservation,
+)
 
 # Estilos de bordes oficiales.
 # Todos los bordes se dibujan en negro (mismo color en los cuatro lados) para que
@@ -89,6 +95,29 @@ _FONT_CERTIFICADO_SIZE = 11
 # Toda la información de la tabla de Certificados va centrada.
 _ALIGN_CENTER_CERT = '<alignment horizontal="center" vertical="center"/>'
 
+# Tope defensivo del ancho de la tabla de Sistematización. Si `ws.max_column`
+# viniera inflado por formato en columnas lejanas (p. ej. XFD), aplicar bordes a
+# toda la fila crearía millones de celdas y Excel no podría abrir el libro.
+_MAX_COLUMNAS_SISTEMATIZACION = 55
+
+
+def _ancho_tabla_sistematizacion(ws, col_map: Dict[str, int]) -> int:
+    """Ancho real de la tabla de Sistematización, acotado al tope defensivo.
+
+    Se toma la mayor entre la última columna mapeada por el parser y la última
+    columna con encabezado en las tres primeras filas. Así el borde cubre toda
+    la tabla sin crear celdas en columnas lejanas que solo tienen formato.
+    """
+    ultimo = max((int(c) for c in col_map.values() if c), default=0)
+    tope = min(ws.max_column or 1, _MAX_COLUMNAS_SISTEMATIZACION)
+    for r in range(1, 4):
+        for c in range(1, tope + 1):
+            if str(ws.cell(r, c).value or "").strip():
+                ultimo = max(ultimo, c)
+    if ultimo <= 0:
+        ultimo = min(ws.max_column or _MAX_COLUMNAS_SISTEMATIZACION, _MAX_COLUMNAS_SISTEMATIZACION)
+    return min(ultimo, _MAX_COLUMNAS_SISTEMATIZACION)
+
 
 @dataclass
 class DirectUpdateReport:
@@ -104,6 +133,9 @@ class DirectUpdateReport:
     sistematizacion_promedios_no_copiados: int = 0
     # Notas finales ya escritas que se corrigieron con el valor de Notas (opt-in).
     sistematizacion_promedios_actualizados: int = 0
+    # Celdas no escritas por ser fórmula matricial o maestra de fórmula compartida
+    # (reemplazarlas dejaría el libro dañado).
+    sistematizacion_celdas_protegidas: int = 0
     certificados_rows_appended: int = 0
     # Ubicación exacta de lo anexado, para que el usuario pueda comprobarlo:
     certificados_hoja: str = ""
@@ -1392,6 +1424,64 @@ def _check_file_writable(path: Path) -> Optional[str]:
     return None
 
 
+def _diagnosticar_libros_oficiales(file_paths: Dict[str, Path | str]) -> List[str]:
+    """Detecta libros oficiales YA dañados y explica cómo recuperarlos.
+
+    Se ejecuta antes de crear los respaldos: si un archivo ya está dañado, crear
+    el respaldo único con ese estado destruiría la única copia sana anterior y el
+    cierre podría empeorarlo. En ese caso se aborta sin tocar nada.
+    """
+    from output.xlsx_recovery import diagnose_xlsx
+
+    problemas: List[str] = []
+    for role in ("sistematizacion", "certificados", "control_aulas"):
+        if role not in file_paths:
+            continue
+        ruta = Path(file_paths[role]).resolve()
+        if not ruta.exists():
+            continue
+        try:
+            info = diagnose_xlsx(ruta)
+        except Exception as exc:  # noqa: BLE001 - nunca debe romper el preflight
+            problemas.append(
+                f"'{ruta.name}': no se pudo validar su estructura ({exc})."
+            )
+            continue
+        if not info.tiene_danos_graves:
+            continue
+
+        detalles: List[str] = []
+        if info.zip_danado:
+            detalles.append(f"ZIP dañado en '{info.zip_danado}'")
+        if info.xml_invalidos:
+            detalles.append(f"{len(info.xml_invalidos)} parte(s) XML inválida(s)")
+        if info.esclavas_huerfanas:
+            detalles.append(
+                f"{info.esclavas_huerfanas} fórmula(s) compartida(s) huérfana(s)"
+            )
+        if info.celdas_duplicadas:
+            detalles.append(f"{info.celdas_duplicadas} celda(s) duplicada(s)")
+        if info.estilos_fuera_de_rango:
+            detalles.append(
+                f"{info.estilos_fuera_de_rango} estilo(s) de celda inexistente(s)"
+            )
+        if info.strings_fuera_de_rango:
+            detalles.append(
+                f"{info.strings_fuera_de_rango} índice(s) de texto compartido inválido(s)"
+            )
+        if info.calcpr_duplicados:
+            detalles.append(f"{info.calcpr_duplicados} elemento(s) <calcPr> duplicado(s)")
+
+        problemas.append(
+            f"'{ruta.name}' ya presenta daños estructurales "
+            f"({'; '.join(detalles)}). El cierre se detuvo ANTES de crear respaldos "
+            "para no empeorar el libro ni sobrescribir un respaldo sano. Use la "
+            "opción [9] para diagnosticarlo y repararlo en una copia, o la opción "
+            "[6] para restaurar el respaldo si aún es válido."
+        )
+    return problemas
+
+
 def files_not_writable(file_paths: Dict[str, Path | str]) -> List[str]:
     """Revisa que los archivos oficiales que se van a modificar sean escribibles.
 
@@ -1492,6 +1582,17 @@ def apply_direct_cierre(
         return report
 
     # ---------------------------------------------------------
+    # PASO 0-bis: VERIFICAR QUE LOS LIBROS NO ESTÉN YA DAÑADOS
+    # ---------------------------------------------------------
+    # Un libro dañado (p. ej. con fórmulas compartidas huérfanas de un cierre
+    # anterior) no se debe volver a editar: empeoraría y el respaldo único se
+    # actualizaría con el estado roto. Se aborta y se indica cómo repararlo.
+    problemas_estructura = _diagnosticar_libros_oficiales(file_paths)
+    if problemas_estructura:
+        report.errors.extend(problemas_estructura)
+        return report
+
+    # ---------------------------------------------------------
     # PASO 1: GENERACIÓN DE COPIAS DE SEGURIDAD (BACKUP)
     # ---------------------------------------------------------
     # Los backups también sirven como fuente de las extensiones de hoja
@@ -1542,7 +1643,7 @@ def apply_direct_cierre(
         col_nombres = col_map.get("nombres")
         col_apellidos = col_map.get("apellidos")
         col_documento = col_map.get("documento")
-        max_col_sist = ws_sist.max_column or 55
+        max_col_sist = _ancho_tabla_sistematizacion(ws_sist, col_map)
 
         for idx, (m, cg) in enumerate(all_matches):
             es = m.estudiante_sist
@@ -1576,7 +1677,7 @@ def apply_direct_cierre(
             # 1. Estandarizar nombres y apellidos a MAYÚSCULAS
             if col_nombres:
                 val_nom = ws_sist.cell(r_idx, col_nombres).value
-                if isinstance(val_nom, str) and val_nom:
+                if isinstance(val_nom, str) and val_nom and not val_nom.startswith("="):
                     val_upper = val_nom.strip().upper()
                     if val_nom != val_upper:
                         sheet_sist.set_cell(r_idx, col_nombres, val_upper, has_value=True)
@@ -1584,7 +1685,7 @@ def apply_direct_cierre(
 
             if col_apellidos:
                 val_ape = ws_sist.cell(r_idx, col_apellidos).value
-                if isinstance(val_ape, str) and val_ape:
+                if isinstance(val_ape, str) and val_ape and not val_ape.startswith("="):
                     val_upper = val_ape.strip().upper()
                     if val_ape != val_upper:
                         sheet_sist.set_cell(r_idx, col_apellidos, val_upper, has_value=True)
@@ -1637,7 +1738,18 @@ def apply_direct_cierre(
                 )
 
                 if celda_vacia or actualizar_promedio:
-                    sheet_sist.set_cell(r_idx, c_idx, val_to_write, has_value=True)
+                    try:
+                        sheet_sist.set_cell(r_idx, c_idx, val_to_write, has_value=True)
+                    except CeldaProtegidaError as exc:
+                        # Nunca se rompe el libro por reemplazar una fórmula
+                        # compartida/matricial: se omite esa celda y se informa.
+                        report.sistematizacion_celdas_protegidas += 1
+                        report.warnings.append(
+                            f"Sistematización fila {r_idx}: no se escribió el valor "
+                            f"en la celda {exc.ref} porque {exc.motivo}. Si hace "
+                            "falta corregirla, hágalo directamente en Excel."
+                        )
+                        continue
                     if actualizar_promedio:
                         report.sistematizacion_promedios_actualizados += 1
                     else:
@@ -1843,9 +1955,18 @@ def apply_direct_cierre(
                     font=font_cert_id,
                     alignment=_ALIGN_CENTER_CERT,
                 )
-                sheet_cert.set_cell(
-                    curr_cert_r, c_idx, val, has_value=True, style=style_id
-                )
+                try:
+                    sheet_cert.set_cell(
+                        curr_cert_r, c_idx, val, has_value=True, style=style_id
+                    )
+                except CeldaProtegidaError as exc:
+                    # Una fórmula compartida/matricial en la plantilla no se debe
+                    # reemplazar: se omite esa celda y la relectura final decide si
+                    # el registro quedó completo.
+                    report.warnings.append(
+                        f"Certificados fila {curr_cert_r}, columna {c_idx}: no se "
+                        f"escribió porque {exc.motivo}."
+                    )
 
             filas_esperadas.append(
                 (curr_cert_r, current_n, str(doc), str(codigo_curso).strip().upper())
@@ -1960,9 +2081,17 @@ def apply_direct_cierre(
                 if c_str in clases_pendientes:
                     cur_val = ws.cell(r, col_certificados).value
                     if cur_val is None or str(cur_val).strip() == "":
-                        sheet_ctrl.set_cell(
-                            r, col_certificados, fecha_cierre_hoy, has_value=True
-                        )
+                        try:
+                            sheet_ctrl.set_cell(
+                                r, col_certificados, fecha_cierre_hoy, has_value=True
+                            )
+                        except CeldaProtegidaError as exc:
+                            report.warnings.append(
+                                f"Control de Aulas ('{sheet_name}', fila {r}): no se "
+                                f"escribió la fecha de cierre en {exc.ref} porque "
+                                f"{exc.motivo}."
+                            )
+                            continue
                         report.control_aulas_classes_marked += 1
                         modified_control_sheets.add(sheet_name)
                     else:
