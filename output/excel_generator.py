@@ -23,6 +23,7 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
 from core.models import AulaCierreResult, AulaMetadata, ClaseGroup
+from config.settings import PREFIJO_TEXTO_MODULOS
 from normalization.dates import (
     format_certificate_date,
     format_ciclo_date,
@@ -231,8 +232,10 @@ def generate_cierre_excel(
                 is_email = (col_idx == col_correo_idx) or ("@" in val and "." in val)
                 is_fecha_envio = (col_idx == col_fecha_envio_idx)
                 is_promedio = (col_idx == col_promedio_idx)
-                if is_email or is_fecha_envio or is_promedio:
-                    pass  # Mantener correos, fechas de envío y nota final tal cual
+                # El texto "El curso solo tiene N módulos" conserva su redacción.
+                is_texto_modulos = val.startswith(PREFIJO_TEXTO_MODULOS)
+                if is_email or is_fecha_envio or is_promedio or is_texto_modulos:
+                    pass  # Mantener correos, fechas de envío, nota final y avisos tal cual
                 else:
                     val_clean = val.strip()
                     val_lower = val_clean.lower()

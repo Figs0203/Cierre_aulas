@@ -227,6 +227,14 @@ oficiales de la biblioteca. Ajustes recientes (formato oficial):
   (`processing/rules_engine.py:apply_rules_to_match`). Si una celda de un no
   aprobado ya trae una fecha escrita (p. ej. de un cierre anterior), el cierre
   directo la corrige a `No aplica`.
+- **Aviso de módulos faltantes**: Sistematización tiene 5 columnas de módulos,
+  pero muchos cursos tienen menos. Las columnas sobrantes ya no quedan vacías:
+  llevan `El curso solo tiene X módulos` (singular `1 módulo`), donde X es el
+  número de módulos del curso (columnas de módulo detectadas en Notas, sin
+  contar la nota final / promedio del curso completo). Se calcula en
+  `processing/rules_engine.py:_texto_modulos_faltantes` y solo rellena celdas
+  vacías (nunca pisa una nota existente). En el archivo auxiliar el aviso
+  conserva su redacción (no se pasa a MAYÚSCULAS).
 - El modo **7 (Diagnóstico)** incluye una **simulación completa del Modo 5**
   sobre copias (parsers, matcheo, edición quirúrgica y escritura) que valida el
   XML de cada hoja resultante con expat, confirma que las listas de validación
@@ -395,5 +403,5 @@ oficiales de la biblioteca. Ajustes recientes (formato oficial):
     tablas dinámicas, listas de validación, gráficos e imágenes: solo edita las
     celdas y añade estilos; nunca elimina partes del paquete.
 
-Última verificación: **177 tests OK** (`python -m pytest tests -q`). El grafo de
+Última verificación: **183 tests OK** (`python -m pytest tests -q`). El grafo de
 conocimiento se regenera con `graphify update .` tras cada cambio de código.

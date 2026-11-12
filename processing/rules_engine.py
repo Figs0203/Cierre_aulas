@@ -28,6 +28,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from config.settings import (
     CERTIFICADO_NO,
     CERTIFICADO_SI,
+    PREFIJO_TEXTO_MODULOS,
     VALOR_NO_APLICA,
 )
 from core.models import AulaMetadata, StudentMatch
@@ -114,6 +115,15 @@ def evaluate_certification_status(
         return "No aprobó", promedio
 
     return "Aprobó", promedio
+
+
+def _texto_modulos_faltantes(num_modulos: int) -> str:
+    """Texto informativo para las columnas de módulos que el curso no tiene.
+
+    Ej.: ``'El curso solo tiene 3 módulos'`` (o ``'... 1 módulo'`` en singular).
+    """
+    unidad = "módulo" if num_modulos == 1 else "módulos"
+    return f"{PREFIJO_TEXTO_MODULOS}{num_modulos} {unidad}"
 
 
 def _format_fecha_envio_sistematizacion(value: Any) -> str:
@@ -241,6 +251,20 @@ def apply_rules_to_match(
         es.raw_row_data[c_m4] = califs_dict["modulo_4"]
     if "modulo_5" in califs_dict:
         es.raw_row_data[c_m5] = califs_dict["modulo_5"]
+
+    # Relleno informativo de las columnas de módulos que el curso no tiene.
+    # X = número de módulos del curso (columnas de módulos detectadas en Notas,
+    # sin contar la nota final / promedio del curso completo). Si el curso tiene
+    # menos de 5, las columnas restantes no se dejan vacías. Nunca se pisa un
+    # valor que ya exista en esa celda de Sistematización.
+    modulos_curso = len(en.calificaciones_modulos or {})
+    if 0 < modulos_curso < 5:
+        texto_modulos = _texto_modulos_faltantes(modulos_curso)
+        for n in range(modulos_curso + 1, 6):
+            c_mod = col_map.get(f"modulo_{n}", 44 + n)
+            valor_actual = es.raw_row_data.get(c_mod)
+            if valor_actual is None or str(valor_actual).strip() == "":
+                es.raw_row_data[c_mod] = texto_modulos
 
     # Copiar y pegar la nota final TAL CUAL viene del archivo de Notas.
     # Si Notas no trae nota final, la celda de Sistematización se deja vacía:

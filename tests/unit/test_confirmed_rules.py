@@ -489,6 +489,68 @@ class TestFormatoFeedbackAjustes:
         assert ws_sist.cell(2, 6).value == "24-mar-2026"
         wb.close()
 
+    def test_archivo_auxiliar_conserva_el_aviso_de_modulos(self, tmp_path):
+        """El aviso 'El curso solo tiene N módulos' conserva su redacción."""
+        import openpyxl
+        from core.models import (
+            AulaCierreResult,
+            AulaMetadata,
+            ClaseGroup,
+            EstudianteNotas,
+            EstudianteSistematizacion,
+            StudentMatch,
+            TracedValue,
+        )
+        from output.excel_generator import generate_cierre_excel
+
+        def tv(val):
+            return TracedValue(
+                value=val,
+                source_file="S",
+                source_sheet="F",
+                source_column="C",
+                source_col_idx=1,
+                source_row=1,
+            )
+
+        aviso = "El curso solo tiene 2 módulos"
+        es = EstudianteSistematizacion(
+            row_number=2,
+            nombres=tv("Ana"),
+            apellidos=tv("Lopez"),
+            clase=tv("5535"),
+            documento=tv("1002"),
+            correo=tv("alopez@eafit.edu.co"),
+            estado_calculado="Aprobó",
+            column_indices={"correo": 6, "fecha_envio": 9},
+            raw_row_data={
+                1: "Ana", 2: "Lopez", 3: 4.5, 4: 4.0, 5: aviso, 6: "alopez@eafit.edu.co",
+            },
+        )
+        match = StudentMatch(
+            estudiante_sist=es,
+            estudiante_nota=EstudianteNotas(row_number=2),
+            match_key="doc",
+            match_value="1002",
+        )
+        res = AulaCierreResult(
+            aula=AulaMetadata(), clases=[ClaseGroup(clase_id="5535", matches=[match])]
+        )
+
+        out_path = generate_cierre_excel(
+            result=res,
+            codigo_curso="ABBUEI205",
+            sist_headers=["Nombres", "Apellidos", "Módulo 1", "Módulo 2", "Módulo 3", "Correo"],
+            start_consecutivo=1,
+            output_dir=tmp_path,
+        )
+
+        wb = openpyxl.load_workbook(out_path, data_only=True)
+        ws_sist = wb["SISTEMATIZACION"]
+        assert ws_sist.cell(2, 1).value == "ANA"
+        assert ws_sist.cell(2, 5).value == aviso
+        wb.close()
+
 
 # ============================================================
 # COLUMNA 'FECHA DE ENVÍO' DE SISTEMATIZACIÓN (formato oficial)
@@ -629,3 +691,91 @@ class TestFechaEnvioSistematizacion:
             assert es.estado_calculado == estado_esperado
             assert es.raw_row_data[55] == "No aplica"
             assert es.fecha_envio_calculada == "No aplica"
+
+
+# ============================================================
+# RELLENO DE MÓDULOS QUE EL CURSO NO TIENE
+# ============================================================
+
+
+class TestTextoModulosFaltantes:
+    """Las columnas de módulos que el curso no tiene llevan un aviso, no vacío."""
+
+    def _aplicar(self, modulos, raw_extra=None):
+        from core.models import (
+            AulaMetadata,
+            EstudianteNotas,
+            EstudianteSistematizacion,
+            StudentMatch,
+            TracedValue,
+        )
+        from processing.rules_engine import apply_rules_to_match
+
+        def tv(val):
+            return TracedValue(
+                value=val,
+                source_file="S",
+                source_sheet="F",
+                source_column="C",
+                source_col_idx=1,
+                source_row=1,
+            )
+
+        es = EstudianteSistematizacion(
+            row_number=2,
+            nombres=tv("Ana"),
+            apellidos=tv("Lopez"),
+            clase=tv("5535"),
+            documento=tv("1002"),
+            correo=tv("alopez@eafit.edu.co"),
+            tipo_grupo=tv("Pregrado"),
+            column_indices={
+                "modulo_1": 45, "modulo_2": 46, "modulo_3": 47,
+                "modulo_4": 48, "modulo_5": 49, "promedio": 50, "estado": 51,
+            },
+            raw_row_data=dict(raw_extra or {}),
+        )
+        en = EstudianteNotas(
+            row_number=2,
+            nota_final=tv(4.0),
+            calificaciones_modulos={
+                f"modulo_{i}": tv(nota) for i, nota in modulos.items()
+            },
+        )
+        match = StudentMatch(
+            estudiante_sist=es, estudiante_nota=en, match_key="doc", match_value="1002"
+        )
+        apply_rules_to_match(
+            match, codigo_curso="ABBUEI205", clase_id="5535",
+            aula_meta=AulaMetadata(),
+        )
+        return es
+
+    def test_curso_de_tres_modulos(self):
+        es = self._aplicar({1: 4.5, 2: 3.8, 3: 4.0})
+
+        assert es.raw_row_data[45] == 4.5
+        assert es.raw_row_data[46] == 3.8
+        assert es.raw_row_data[47] == 4.0
+        assert es.raw_row_data[48] == "El curso solo tiene 3 módulos"
+        assert es.raw_row_data[49] == "El curso solo tiene 3 módulos"
+
+    def test_curso_de_un_modulo_usa_singular(self):
+        es = self._aplicar({1: 4.5})
+
+        assert es.raw_row_data[45] == 4.5
+        for col in (46, 47, 48, 49):
+            assert es.raw_row_data[col] == "El curso solo tiene 1 módulo"
+
+    def test_curso_de_cinco_modulos_no_lleva_aviso(self):
+        es = self._aplicar({1: 4.5, 2: 3.8, 3: 4.0, 4: 4.2, 5: 3.9})
+
+        for col in (45, 46, 47, 48, 49):
+            assert isinstance(es.raw_row_data[col], float)
+
+    def test_no_pisa_un_valor_ya_existente(self):
+        es = self._aplicar({1: 4.5, 2: 3.8}, raw_extra={47: 4.9, 48: 4.8})
+
+        assert es.raw_row_data[47] == 4.9
+        assert es.raw_row_data[48] == 4.8
+        assert es.raw_row_data[49] == "El curso solo tiene 2 módulos"

@@ -511,6 +511,64 @@ class TestDirectUpdater(unittest.TestCase):
             self.assertEqual(ws_sist.cell(4, 17).value, "No aplica")
             wb_sist.close()
 
+    def test_aviso_de_modulos_faltantes_se_escribe_en_celdas_vacias(self):
+        """El aviso 'El curso solo tiene N módulos' se escribe en Sistematización."""
+        with tempfile.TemporaryDirectory() as tmp_str:
+            tmpdir = Path(tmp_str)
+            files = self._create_mock_files(tmpdir)
+
+            col_map = {
+                "nombres": 2, "apellidos": 3, "clase": 4, "documento": 5, "correo": 6,
+                "modulo_1": 7, "modulo_2": 8, "modulo_3": 9, "modulo_4": 10,
+                "modulo_5": 11, "promedio": 12, "estado_certificacion": 13,
+                "elaboro_certificado": 14, "codigo_certificado": 15,
+                "envio_certificado": 16, "fecha_envio": 17,
+            }
+
+            def tv(val, col, row):
+                return TracedValue(val, "S", "Formato", col, 1, row)
+
+            aviso = "El curso solo tiene 2 módulos"
+            es = EstudianteSistematizacion(
+                row_number=2,
+                nombres=tv("carlos andres", "Nombres", 2),
+                apellidos=tv("perez gomez", "Apellidos", 2),
+                clase=tv("5535", "Clase", 2),
+                documento=tv("1001", "Documento", 2),
+                correo=tv("cperez@eafit.edu.co", "Correo", 2),
+                estado_calculado="Aprobó",
+                column_indices=col_map,
+                raw_row_data={
+                    7: 4.5, 8: 4.0, 9: aviso, 10: aviso, 11: aviso,
+                    12: 4.2, 13: "Aprobó", 14: "SI", 15: "ABBUEI205",
+                    16: "SI", 17: "27-abr-2026",
+                },
+            )
+            m = StudentMatch(
+                estudiante_sist=es, estudiante_nota=EstudianteNotas(row_number=2),
+                match_key="doc", match_value="1001",
+            )
+            res = AulaCierreResult(
+                aula=AulaMetadata(), clases=[ClaseGroup(clase_id="5535", matches=[m])]
+            )
+
+            report = apply_direct_cierre(
+                file_paths=files,
+                result=res,
+                codigo_curso="ABBUEI205",
+                start_consecutivo=1,
+            )
+
+            self.assertTrue(report.is_successful)
+            wb_sist = openpyxl.load_workbook(files["sistematizacion"], data_only=True)
+            ws_sist = wb_sist["Formato"]
+            self.assertEqual(ws_sist.cell(2, 7).value, 4.5)
+            self.assertEqual(ws_sist.cell(2, 8).value, 4.0)
+            self.assertEqual(ws_sist.cell(2, 9).value, aviso)
+            self.assertEqual(ws_sist.cell(2, 10).value, aviso)
+            self.assertEqual(ws_sist.cell(2, 11).value, aviso)
+            wb_sist.close()
+
     def test_strip_external_links_removes_external_references(self):
         """Las referencias externas deben eliminarse para que Excel no pida reparar el libro."""
         import zipfile

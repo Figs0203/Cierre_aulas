@@ -81,6 +81,12 @@ CERTIFICADO_SI = "SI"
 # Se aplica en SISTEMATIZACIÓN y en CERTIFICADOS.
 VALOR_NO_APLICA = "No aplica"
 
+# [CONFIRMADO] Texto informativo para las columnas de módulos que el curso no
+# tiene. En Sistematización hay 5 columnas de módulos; si el curso solo tiene X
+# (X < 5), las restantes no se dejan vacías: dicen, p. ej.,
+# "El curso solo tiene 3 módulos" (singular: "... 1 módulo").
+PREFIJO_TEXTO_MODULOS = "El curso solo tiene "
+
 # [PENDIENTE] Total de certificados por estudiante aprobado — confirmar en Fase 0.
 TOTAL_CERTIFICADOS_DEFAULT = 1
 
