@@ -578,3 +578,54 @@ class TestFechaEnvioSistematizacion:
 
         assert es.raw_row_data[55] == "27-abr-2026"
         assert es.fecha_envio_calculada == "27-abr-2026"
+
+    def test_apply_rules_escribe_no_aplica_cuando_no_aprobo_o_abandono(self):
+        """Fecha de envío: 'No aplica' si no aprobó o abandonó."""
+        from core.models import (
+            AulaMetadata,
+            EstudianteNotas,
+            EstudianteSistematizacion,
+            StudentMatch,
+            TracedValue,
+        )
+        from processing.rules_engine import apply_rules_to_match
+
+        def tv(val):
+            return TracedValue(
+                value=val,
+                source_file="S",
+                source_sheet="F",
+                source_column="C",
+                source_col_idx=1,
+                source_row=1,
+            )
+
+        casos = {
+            "No aprobó": {"modulo_1": tv(2.0), "modulo_2": tv(1.5)},
+            # Módulos 3 y 4 en cero => regla oficial de abandono.
+            "Abandonó": {"modulo_3": tv(0.0), "modulo_4": tv(0.0)},
+        }
+        for estado_esperado, modulos in casos.items():
+            es = EstudianteSistematizacion(
+                row_number=2,
+                nombres=tv("Ana"),
+                apellidos=tv("Lopez"),
+                clase=tv("5535"),
+                documento=tv("1002"),
+                correo=tv("alopez@eafit.edu.co"),
+                tipo_grupo=tv("Pregrado"),
+                column_indices={"fecha_envio": 55, "promedio": 50, "estado": 51},
+            )
+            en = EstudianteNotas(
+                row_number=2, nota_final=tv(2.0), calificaciones_modulos=modulos
+            )
+            match = StudentMatch(
+                estudiante_sist=es, estudiante_nota=en, match_key="doc", match_value="1002"
+            )
+            meta = AulaMetadata(fecha_fin=tv(datetime(2026, 4, 27, 0, 0, 0)))
+
+            apply_rules_to_match(match, codigo_curso="ABBUEI205", clase_id="5535", aula_meta=meta)
+
+            assert es.estado_calculado == estado_esperado
+            assert es.raw_row_data[55] == "No aplica"
+            assert es.fecha_envio_calculada == "No aplica"

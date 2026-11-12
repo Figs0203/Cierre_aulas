@@ -26,9 +26,11 @@ y los tests las protegen:
    vacías (y los nombres a MAYÚSCULAS); ninguna celda preexistente con datos se
    altera y **ninguna otra parte del libro se reserializa**: el resto del paquete
    `.xlsx` se conserva byte a byte (`output/xlsx_patcher.py`). Notas es siempre
-   solo lectura. **Única excepción autorizada**: si el usuario lo pide en el
+   solo lectura. **Excepciones autorizadas**: (a) si el usuario lo pide en el
    Modo 5 (`actualizar_nota_final_existente`), se corrige la columna de nota
-   final de Sistematización cuando ya tiene un valor distinto al de Notas.
+   final de Sistematización cuando ya tiene un valor distinto al de Notas;
+   (b) la columna *Fecha de envío* de Sistematización se corrige a `No aplica`
+   cuando el estudiante no aprobó o abandonó y la celda traía otra cosa.
 5. **Matching ultra-conservador**: prohibido asignar notas por coincidencia
    difusa de nombres. Se exige doble factor de identidad
    (Documento + Nombre/Correo) — `matching/engine.py`.
@@ -219,6 +221,12 @@ oficiales de la biblioteca. Ajustes recientes (formato oficial):
   arrastraba la hora en ceros) — `processing/rules_engine.py:_format_fecha_envio_sistematizacion`.
   En el archivo auxiliar (Modo 3) esa columna se excluye del `upper()` aplicado
   al resto de la fila — `output/excel_generator.py`.
+- **La fecha de envío depende del estado**: la columna *Fecha de envío* de
+  Sistematización lleva la fecha de finalización de la clase **solo si el
+  estudiante aprobó**; si `No aprobó` o `Abandonó`, dice `No aplica`
+  (`processing/rules_engine.py:apply_rules_to_match`). Si una celda de un no
+  aprobado ya trae una fecha escrita (p. ej. de un cierre anterior), el cierre
+  directo la corrige a `No aplica`.
 - El modo **7 (Diagnóstico)** incluye una **simulación completa del Modo 5**
   sobre copias (parsers, matcheo, edición quirúrgica y escritura) que valida el
   XML de cada hoja resultante con expat, confirma que las listas de validación
@@ -387,5 +395,5 @@ oficiales de la biblioteca. Ajustes recientes (formato oficial):
     tablas dinámicas, listas de validación, gráficos e imágenes: solo edita las
     celdas y añade estilos; nunca elimina partes del paquete.
 
-Última verificación: **175 tests OK** (`python -m pytest tests -q`). El grafo de
+Última verificación: **177 tests OK** (`python -m pytest tests -q`). El grafo de
 conocimiento se regenera con `graphify update .` tras cada cambio de código.

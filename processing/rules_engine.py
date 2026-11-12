@@ -14,6 +14,8 @@ Implementa la fórmula exacta confirmada en Fase 0 desde Sistematización:
 Además gestiona los formatos de:
 - Se elaboró certificado SI/NO: 'SI' para Aprobó, 'NO' en otro caso.
 - Código del certificado: Código del curso para SI, 'No aplica' para NO.
+- Fecha de envío: fecha de finalización de la clase si Aprobó; 'No aplica' si
+  No aprobó o Abandonó.
 - Docente COIN: '{CÓDIGO-GUIÓN} {FORMADOR_LÍDER}'.
 - Ciclo: 'CLASE {clase} {catalogo} - {programa} - {fecha_ini} A {fecha_fin}'.
 """
@@ -208,7 +210,12 @@ def apply_rules_to_match(
     # La columna 'Fecha de envío' de Sistematización se escribe como fecha oficial
     # 'DD-mes-AAAA' (ej. '24-mar-2026'), NUNCA como el repr de un datetime
     # (ej. '2026-03-24 00:00:00'), que además arrastraba la hora en ceros.
-    fecha_envio_txt = _format_fecha_envio_sistematizacion(f_fin)
+    # REGLA OFICIAL: solo los aprobados tienen fecha de envío; si no aprobó o
+    # abandonó, la columna dice 'No aplica'.
+    if is_aprobado:
+        fecha_envio_txt = _format_fecha_envio_sistematizacion(f_fin)
+    else:
+        fecha_envio_txt = VALOR_NO_APLICA
 
     # Actualizar raw_row_data para reproducción exacta de las columnas de Sistematización
     col_map = es.column_indices if es.column_indices else {}

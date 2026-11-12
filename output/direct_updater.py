@@ -1826,6 +1826,13 @@ def apply_direct_cierre(
             if c_prom and es.raw_row_data.get(c_prom) is None:
                 report.sistematizacion_promedios_no_copiados += 1
 
+            # La 'Fecha de envío' depende del estado: si el estudiante aprobó se
+            # escribe la fecha de finalización de la clase; si no aprobó o
+            # abandonó, debe decir 'No aplica'. Si la celda ya tiene un valor
+            # distinto al que dicta la regla (p. ej. una fecha en un no aprobado),
+            # se corrige; en cualquier otro caso se respeta la no sobrescritura.
+            c_fenv = col_map.get("fecha_envio")
+
             for c_idx, val_to_write in target_values.items():
                 if val_to_write is None:
                     continue
@@ -1843,7 +1850,18 @@ def apply_direct_cierre(
                     and not _valores_equivalentes(cur_val, val_to_write)
                 )
 
-                if celda_vacia or actualizar_promedio:
+                # Excepción de la fecha de envío: si la regla oficial exige
+                # 'No aplica' (no aprobó / abandonó) y la celda trae otra cosa,
+                # se corrige.
+                actualizar_fecha_envio = (
+                    c_fenv is not None
+                    and c_idx == c_fenv
+                    and not celda_vacia
+                    and str(val_to_write).strip().lower() == VALOR_NO_APLICA.lower()
+                    and not _valores_equivalentes(cur_val, val_to_write)
+                )
+
+                if celda_vacia or actualizar_promedio or actualizar_fecha_envio:
                     try:
                         sheet_sist.set_cell(r_idx, c_idx, val_to_write, has_value=True)
                     except CeldaProtegidaError as exc:

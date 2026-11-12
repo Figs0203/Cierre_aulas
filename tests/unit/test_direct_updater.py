@@ -420,6 +420,97 @@ class TestDirectUpdater(unittest.TestCase):
             self.assertEqual(wb_sist["Formato"].cell(2, 7).value, 4.5)
             wb_sist.close()
 
+    def test_fecha_envio_no_aplica_para_no_aprobados(self):
+        """Fecha de envío: fecha fin si aprobó; 'No aplica' si no aprobó/abandonó.
+
+        Además, si una celda de un no aprobado trae una fecha escrita (p. ej. de
+        un cierre anterior), se corrige a 'No aplica'.
+        """
+        with tempfile.TemporaryDirectory() as tmp_str:
+            tmpdir = Path(tmp_str)
+            files = self._create_mock_files(tmpdir)
+
+            # Fila 3 (no aprobó) trae por error una fecha; fila 4 (abandonó) vacía.
+            wb = openpyxl.load_workbook(files["sistematizacion"])
+            ws = wb["Formato"]
+            ws.cell(3, 17, "27-abr-2026")
+            ws.append(
+                [3, "Luis", "Rojas", "5536", "1003", "lrojas@eafit.edu.co",
+                 None, None, None, None, None, None, None, None, None, None, None]
+            )
+            wb.save(files["sistematizacion"])
+            wb.close()
+
+            col_map = {
+                "nombres": 2, "apellidos": 3, "clase": 4, "documento": 5, "correo": 6,
+                "modulo_1": 7, "modulo_2": 8, "modulo_3": 9, "modulo_4": 10,
+                "modulo_5": 11, "promedio": 12, "estado_certificacion": 13,
+                "elaboro_certificado": 14, "codigo_certificado": 15,
+                "envio_certificado": 16, "fecha_envio": 17,
+            }
+
+            def tv(val, col, row):
+                return TracedValue(val, "S", "Formato", col, 1, row)
+
+            def crear_estudiante(row, nombres, apellidos, doc, correo,
+                                estado, fecha_envio):
+                return EstudianteSistematizacion(
+                    row_number=row,
+                    nombres=tv(nombres, "Nombres", row),
+                    apellidos=tv(apellidos, "Apellidos", row),
+                    clase=tv("5535" if row == 2 else "5536", "Clase", row),
+                    documento=tv(doc, "Documento", row),
+                    correo=tv(correo, "Correo", row),
+                    estado_calculado=estado,
+                    column_indices=col_map,
+                    raw_row_data={
+                        12: 4.5 if estado == "Aprobó" else 2.0,
+                        13: estado,
+                        14: "SI" if estado == "Aprobó" else "NO",
+                        15: "ABBUEI205" if estado == "Aprobó" else "No aplica",
+                        16: "SI" if estado == "Aprobó" else "NO",
+                        17: fecha_envio,
+                    },
+                )
+
+            estudiantes = [
+                (crear_estudiante(2, "carlos andres", "perez gomez", "1001",
+                                  "cperez@eafit.edu.co", "Aprobó", "27-abr-2026"), "5535"),
+                (crear_estudiante(3, "Ana Maria", "Lopez Duque", "1002",
+                                  "alopez@eafit.edu.co", "No aprobó", "No aplica"), "5536"),
+                (crear_estudiante(4, "Luis", "Rojas", "1003",
+                                  "lrojas@eafit.edu.co", "Abandonó", "No aplica"), "5536"),
+            ]
+
+            clases: dict[str, ClaseGroup] = {}
+            for es, clase_id in estudiantes:
+                m = StudentMatch(
+                    estudiante_sist=es,
+                    estudiante_nota=EstudianteNotas(row_number=es.row_number),
+                    match_key="doc",
+                    match_value=es.documento.value,
+                )
+                clases.setdefault(clase_id, ClaseGroup(clase_id=clase_id, matches=[]))
+                clases[clase_id].matches.append(m)
+
+            res = AulaCierreResult(aula=AulaMetadata(), clases=list(clases.values()))
+
+            report = apply_direct_cierre(
+                file_paths=files,
+                result=res,
+                codigo_curso="ABBUEI205",
+                start_consecutivo=1,
+            )
+
+            self.assertTrue(report.is_successful)
+
+            wb_sist = openpyxl.load_workbook(files["sistematizacion"], data_only=True)
+            ws_sist = wb_sist["Formato"]
+            self.assertEqual(ws_sist.cell(2, 17).value, "27-abr-2026")
+            self.assertEqual(ws_sist.cell(3, 17).value, "No aplica")
+            self.assertEqual(ws_sist.cell(4, 17).value, "No aplica")
+            wb_sist.close()
+
     def test_strip_external_links_removes_external_references(self):
         """Las referencias externas deben eliminarse para que Excel no pida reparar el libro."""
         import zipfile
