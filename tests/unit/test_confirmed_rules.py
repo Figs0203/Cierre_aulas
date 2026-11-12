@@ -291,7 +291,7 @@ class TestFormatoFeedbackAjustes:
         assert st_apr == "Aprobó"
 
         # No aprobó
-        st_no, _ = evaluate_certification_status({"modulo_1": 2.0, "modulo_2": 4.0})
+        st_no, _ = evaluate_certification_status({"modulo_1": 2.0, "modulo_2": 2.0})
         assert st_no == "No aprobó"
 
         # Abandonó
@@ -664,7 +664,7 @@ class TestFechaEnvioSistematizacion:
 
         casos = {
             "No aprobó": {"modulo_1": tv(2.0), "modulo_2": tv(1.5)},
-            # Módulos 3 y 4 en cero => regla oficial de abandono.
+            # Todas las notas (las únicas dos) en 0 => Abandonó.
             "Abandonó": {"modulo_3": tv(0.0), "modulo_4": tv(0.0)},
         }
         for estado_esperado, modulos in casos.items():
@@ -779,3 +779,52 @@ class TestTextoModulosFaltantes:
         assert es.raw_row_data[47] == 4.9
         assert es.raw_row_data[48] == 4.8
         assert es.raw_row_data[49] == "El curso solo tiene 2 módulos"
+
+
+# ============================================================
+# REGLA DE CERTIFICACIÓN (Aprobó / No aprobó / Abandonó)
+# ============================================================
+
+
+class TestReglaDeCertificacion:
+    """Pregrado: nota general >= 3. Posgrado: final >= 3.5 y ningún módulo < 3.5.
+
+    Abandonó solo si todas las notas de los módulos están en 0.
+    """
+
+    def _estado(self, modulos, tipo="Pregrado", final=None):
+        from processing.rules_engine import evaluate_certification_status
+
+        return evaluate_certification_status(
+            {f"modulo_{i}": n for i, n in enumerate(modulos, start=1)},
+            tipo_grupo=tipo,
+            nota_final_calculated=final,
+        )[0]
+
+    def test_pregrado_aprueba_con_nota_general_de_3(self):
+        # Un módulo bajo no bloquea si la nota general llega a 3.0.
+        assert self._estado([2.0, 1.0], final=3.0) == "Aprobó"
+        assert self._estado([5.0, 5.0], final=3.0) == "Aprobó"
+
+    def test_pregrado_no_aprueba_si_la_nota_general_es_menor_a_3(self):
+        assert self._estado([5.0, 5.0], final=2.99) == "No aprobó"
+
+    def test_pregrado_sin_nota_final_usa_el_promedio_de_modulos(self):
+        assert self._estado([3.0, 3.0]) == "Aprobó"
+        assert self._estado([2.0, 4.0]) == "Aprobó"  # promedio 3.0
+        assert self._estado([2.0, 3.0]) == "No aprobó"  # promedio 2.5
+
+    def test_posgrado_exige_final_y_ningun_modulo_bajo_3_5(self):
+        assert self._estado([3.5, 3.6], tipo="Posgrado", final=3.5) == "Aprobó"
+        assert self._estado([3.4, 4.0], tipo="Posgrado", final=4.0) == "No aprobó"
+        assert self._estado([4.0, 4.0], tipo="Posgrado", final=3.49) == "No aprobó"
+
+    def test_abandono_solo_si_todas_las_notas_estan_en_0(self):
+        assert self._estado([0.0, 0.0], final=0.0) == "Abandonó"
+        assert self._estado([0.0, 0.0, 0.0, 0.0]) == "Abandonó"
+        # Módulos 3 y 4 en 0 pero otras notas con valor: ya NO es abandono.
+        assert self._estado([4.0, 4.0, 0.0, 0.0]) == "No aprobó"
+
+    def test_sin_modulos_ni_nota_final_es_abandono(self):
+        assert self._estado([]) == "Abandonó"
+        assert self._estado([], final=4.0) == "Aprobó"

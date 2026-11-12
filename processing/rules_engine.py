@@ -1,15 +1,15 @@
 """
 Motor de Reglas de Negocio Oficiales y Cálculo de Certificación.
 
-Implementa la fórmula exacta confirmada en Fase 0 desde Sistematización:
-  =IF(OR(AVERAGE(AS:AV)=0, AND(AS=0,AT=0,AU=0,AV=0), AND(AU=0,AV=0)), "Abandonó",
-      IF(D="Pregrado",
-          IF(OR(AS<3, AT<3, AU<3, AV<3), "No aprobó", "Aprobó"),
-          IF(D="Posgrado",
-              IF(OR(AS<3.5, AT<3.5, AU<3.5, AV<3.5), "No aprobó", "Aprobó")
-          )
-      )
-  )
+Regla oficial de certificación:
+
+* ``Abandonó``: todas las notas de los módulos están en 0 (si el curso no trae
+  módulos, cuando no hay nota final o es 0).
+* ``Aprobó`` (Pregrado): la nota general (nota final de Notas; si no viene, el
+  promedio de los módulos) es 3.0 o más.
+* ``Aprobó`` (Posgrado): la nota final es 3.5 o más **y** ninguna nota de módulo
+  está por debajo de 3.5.
+* ``No aprobó``: cualquier otro caso con al menos una nota distinta de 0.
 
 Además gestiona los formatos de:
 - Se elaboró certificado SI/NO: 'SI' para Aprobó, 'NO' en otro caso.
@@ -51,6 +51,20 @@ def evaluate_certification_status(
 ) -> Tuple[str, Optional[float]]:
     """Evalúa el estado de certificación oficial de un estudiante.
 
+    Regla oficial:
+
+    * ``Abandonó``: todas las notas de los módulos están en 0 (si el curso no
+      trae notas de módulos, cuando no hay nota final o esta es 0).
+    * ``Aprobó`` (Pregrado): la **nota general** es 3.0 o más.
+    * ``Aprobó`` (Posgrado): la **nota final** es 3.5 o más **y** ninguna nota de
+      módulo está por debajo de 3.5.
+    * ``No aprobó``: cualquier otro caso (tiene al menos una nota distinta de 0).
+
+    La *nota general* es la nota final del archivo de Notas (``Calculated
+    Final`` y equivalentes). Si Notas no la trae, se usa el promedio de los
+    módulos, solo para clasificar; **nunca** se escribe ese promedio en la
+    columna de nota final.
+
     Args:
         calificaciones: Diccionario {'modulo_1': nota, 'modulo_2': nota, ...}
         tipo_grupo: 'Pregrado', 'Posgrado' o None (default Pregrado).
@@ -61,8 +75,8 @@ def evaluate_certification_status(
           - estado: 'Aprobó', 'No aprobó' o 'Abandonó'.
           - nota_final: **exactamente** el valor de la nota final de Notas
             (puede ser None si el archivo no la trae). NUNCA se calcula un
-            promedio: los porcentajes y ponderaciones del curso son potestad
-            del archivo de Notas (Calculated Final), no de esta herramienta.
+            promedio para escribir: los porcentajes y ponderaciones del curso
+            son potestad del archivo de Notas (Calculated Final).
     """
     # Extraer valores numéricos de módulos
     mod_keys = sorted([k for k in calificaciones if k.startswith("modulo_")])
@@ -74,47 +88,38 @@ def evaluate_certification_status(
         except (ValueError, TypeError):
             pass
 
-    # El promedio de módulos se usa SOLO para la regla oficial de abandono
-    # (AVERAGE(AS:AV)=0). Jamás se escribe en la columna de nota final.
-    promedio_modulos = (
-        round(sum(notas_vals) / len(notas_vals), 2) if notas_vals else None
-    )
-
     # La nota final se COPIA TAL CUAL de Notas; si no existe, queda None.
     promedio = nota_final_calculated
 
-    if not notas_vals and nota_final_calculated is None:
-        return "Abandonó", None
-
-    # 1. Regla oficial de "Abandonó":
-    # Promedio de módulos = 0, ó todas las notas en 0, ó los módulos 3 y 4 en 0
-    all_zero = all(n == 0.0 for n in notas_vals) if notas_vals else False
-    m3_zero = False
-    m4_zero = False
-    if len(notas_vals) >= 3 and notas_vals[2] == 0.0:
-        m3_zero = True
-    if len(notas_vals) >= 4 and notas_vals[3] == 0.0:
-        m4_zero = True
-
-    if (
-        (promedio_modulos is not None and promedio_modulos == 0.0)
-        or all_zero
-        or (m3_zero and m4_zero)
-        or (promedio is not None and promedio == 0.0)
-    ):
+    # 1. "Abandonó": todas las notas de los módulos están en 0. Si el curso no
+    #    trae módulos, se considera abandono cuando no hay nota final o es 0.
+    #    Ya NO se marca abandonó por tener los módulos 3 y 4 en 0: solo cuando
+    #    TODAS las notas están en 0.
+    if notas_vals:
+        if all(n == 0.0 for n in notas_vals):
+            return "Abandonó", promedio
+    elif promedio is None or promedio == 0.0:
         return "Abandonó", promedio
+
+    # Nota general para decidir la aprobación: la nota final de Notas; si no
+    # viene (o no es numérica), el promedio de los módulos (solo para clasificar).
+    promedio_modulos = (
+        round(sum(notas_vals) / len(notas_vals), 2) if notas_vals else None
+    )
+    nota_general = promedio if promedio is not None else promedio_modulos
 
     # 2. Umbral según tipo de grupo (Pregrado >= 3.0, Posgrado >= 3.5)
     tipo_norm = str(tipo_grupo).strip().lower() if tipo_grupo else "pregrado"
     is_posgrado = "posgrado" in tipo_norm
+    umbral = 3.5 if is_posgrado else 3.0
 
-    threshold = 3.5 if is_posgrado else 3.0
+    aprobado = nota_general is not None and nota_general >= umbral
 
-    # Todos los módulos deben cumplir el umbral mínimo
-    if any(n < threshold for n in notas_vals):
-        return "No aprobó", promedio
+    # Posgrado: además, ninguna nota de módulo puede quedar por debajo de 3.5.
+    if is_posgrado:
+        aprobado = aprobado and all(n >= umbral for n in notas_vals)
 
-    return "Aprobó", promedio
+    return ("Aprobó" if aprobado else "No aprobó"), promedio
 
 
 def _texto_modulos_faltantes(num_modulos: int) -> str:
