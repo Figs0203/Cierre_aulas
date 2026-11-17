@@ -30,7 +30,31 @@ pip install -r requirements.txt
 
 ## 🚀 Cómo Ejecutar la Herramienta
 
-### Opción 1: Menú Interactivo Principal (Recomendado)
+### Aplicación de escritorio (recomendada)
+
+```bash
+python app.py
+```
+
+También puede hacer doble clic en **`Cierre de Aulas.bat`**, que abre la ventana sin consola.
+La interfaz usa `tkinter` (incluido con Python): no agrega ninguna dependencia externa.
+
+| Página de la aplicación | Modo equivalente |
+|---|---|
+| Cierre de aula | Modo 2 (simular), Modo 3 (archivo auxiliar) y Modo 5 (aplicar en oficiales) |
+| Cierre por lotes | Modo 8 |
+| Restaurar respaldo | Modo 6 |
+| Diagnóstico | Modo 1 (inspección técnica) y Modo 7 (cruce de identidades) |
+| Reparar archivo | Modo 9 |
+| Seguridad y privacidad | Modo 4 (verificación offline) |
+
+Es una capa de presentación: no reimplementa reglas ni parsers, invoca las mismas
+funciones del proyecto (`run_cierre_pipeline`, `apply_direct_cierre`,
+`restore_last_backup`, `diagnose_xlsx`, `repair_xlsx`) y conserva todas las
+garantías: 100 % local, archivos de solo lectura, respaldo único y confirmación
+explícita antes de escribir en los oficiales.
+
+### Menú interactivo de consola
 
 Ejecute en su terminal:
 
